@@ -81,6 +81,75 @@ assertions):
 `(facts/unverified-claims)` returns all of rule 2's gaps as data, so the
 to-do list is queryable rather than buried in prose.
 
+## Worldwide coverage plan
+
+`src/mortgage/plan.cljc` is the plan for the other ~182 jurisdictions, written
+as data so progress is *measured* rather than asserted.
+
+**Universe: 188 jurisdictions**, derived from the existing
+`cloud-itonami-iso3166-*` family (225 repositories, minus 37 agency /
+sub-national codes such as `JPN-FSA`, `USA-SEC`). Not typed by hand —
+`data/jurisdiction-universe.edn` is generated and writes out the excluded set
+so the filter can be audited.
+
+**Status is computed, never declared.** `plan/plane-status` reads the catalog
+entry: a plane is `:verbatim` only if the evidence that defines it is
+physically present. Nobody can mark a jurisdiction done. Today:
+
+| plane | absent | located | verbatim |
+|---|---|---|---|
+| organizations | 182 | 6 | — |
+| procedure | 182 | **2** | 4 |
+| support | 182 | — | 6 |
+
+The two `:located` procedures are **GBR and FRA** — exactly the two whose
+sources resisted extraction. The plan surfaces that as outstanding work rather
+than letting the seed look uniform.
+
+**Waves**, each of which must justify its own position (a test fails a
+rationale shorter than 80 characters):
+
+| wave | what | why there |
+|---|---|---|
+| 0 | the seeded 6 | proves the three-plane shape end to end |
+| 1 | IDN, AUS, CAN (+ `AUS-NSW`/`CAN-ON`/`USA-CA` exemplars) | jurisdictions the sibling actors already cite — cheapest possible wave, and it stops the fleet disagreeing with itself |
+| 2 | 27 EEA states | Directive 2014/17/EU harmonises ESIS/APRC/withdrawal, collapsing the per-country question to transposition + land register + support programme |
+| 3 | 20 large non-EEA markets | ordered by mortgage market size — **blocked** until that ordering has a source |
+| 4 | the remaining ~140 | `:located` organizations **only** — exhaustive in *who to ask*, silent on what the answer is |
+
+**Shortcuts must state what they do not buy.** `plan/shared-instruments`
+records MCD, OHADA and Torrens with both `:reduces` and `:does-not-reduce`.
+MCD reduces *research* (read the directive once) and never *citation* (all 27
+still need their own transposition and URL). Torrens is recorded explicitly as
+reducing **nothing** legally, so a future contributor cannot mistake a shared
+registration style for a shared legal basis.
+
+**Cost is measured, not estimated.** `plan/throughput` records the real
+2026-08-01 session: 6 jurisdictions, 24 web calls, ~4 successful fetches per
+jurisdiction at verbatim level, ~25% call failure rate. There is deliberately
+**no completion date** — the waves are ordered work, not a schedule.
+
+**`plan/source-access-hazards`** is the most reusable artefact here: which
+access method failed on which host (`mba.org` 403, FCA Handbook client-side
+rendered, `hypo.org` PDF resolves but yields no text — *a resolving URL is not
+a read source*) and which worked (`kfw.de` PDF read page by page). Extend it
+whenever a source resists a method, so the next run does not re-burn fetches
+rediscovering it.
+
+**`plan/open-decisions`** names three things the plan refuses to decide alone:
+the wave-3 ordering source, whether to adopt 6810's sub-national exemplar
+keys, and whether a scheduled fleet routine may consume `next-batch`. Each
+records what deferring it blocks.
+
+```bash
+nbb --classpath src scripts/emit_coverage_plan.cljs   # refresh the queue snapshot
+```
+
+```clojure
+(plan/next-batch universe 12)   ; the next 12 units of work, earliest wave first
+(plan/progress universe)        ; counted against 188, never against the seeded 6
+```
+
 ## Joining to the rest of the fleet
 
 The organization plane carries `:isic` + `:country` on every entry, which is
