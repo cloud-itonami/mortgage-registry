@@ -1,0 +1,40 @@
+;; schema/mortgage-registry.edn — DataScript schema for `mortgage.facts`.
+;;
+;; Three entity kinds, one per plane, so each plane can be queried on its own:
+;;   jurisdiction — the procedure plane (how a loan is secured on real property)
+;;   support      — the public support plane (guarantee / subsidised loan / tax relief)
+;;   organization — the organization plane (who owns each of the above)
+;;
+;; The organization plane carries `:mortgage.org/isic` + `:mortgage.org/country`
+;; deliberately: those two attributes are the join key to the
+;; `cloud-itonami-assoc-<isic>-<iso3>-<abbrev>` family's
+;; `:association-rule/isic` + `:association-rule/country`.
+
+{:mortgage.jurisdiction/iso3 {:db/unique :db.unique/identity}
+ :mortgage.jurisdiction/name {}
+ :mortgage.jurisdiction/owner-authority {}
+ :mortgage.jurisdiction/legal-basis {}
+ :mortgage.jurisdiction/security-instrument {}
+ :mortgage.jurisdiction/provenance {}
+ :mortgage.jurisdiction/step {:db/cardinality :db.cardinality/many}
+ :mortgage.jurisdiction/not-verified {:db/cardinality :db.cardinality/many}
+
+ :mortgage.support/id {:db/unique :db.unique/identity}
+ :mortgage.support/jurisdiction {:db/index true}
+ :mortgage.support/name {}
+ :mortgage.support/kind {:db/index true}
+ :mortgage.support/operator {}
+ :mortgage.support/status {:db/index true}
+ :mortgage.support/provenance {}
+ :mortgage.support/retrieved-at {}
+ :mortgage.support/eligibility-signal {:db/cardinality :db.cardinality/many}
+
+ :mortgage.org/id {:db/unique :db.unique/identity}
+ :mortgage.org/name-en {}
+ :mortgage.org/name-local {}
+ :mortgage.org/role {:db/index true}
+ :mortgage.org/url {}
+ :mortgage.org/isic {:db/index true}
+ :mortgage.org/country {:db/index true}
+
+ :source/dataset {:db/index true}}

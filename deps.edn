@@ -1,0 +1,15 @@
+;; Portable `.cljc` catalog. The test suite and the tx-data generator run under
+;; nbb (script-host policy: nbb only, ADR-2607173000):
+;;
+;;   nbb --classpath src:test run-tests.cljs
+;;   nbb --classpath src scripts/emit_tx.cljs
+;;
+;; This deps.edn exists so the same `.cljc` sources load on a JVM classpath for
+;; linting and for consumers that embed the catalog in a Datomic/DataScript
+;; process. There is no JVM-only code in this repository.
+{:paths ["src"]
+ :aliases
+ {:lint {:replace-deps {clj-kondo/clj-kondo {:mvn/version "2024.11.14"}}
+         :main-opts    ["-m" "clj-kondo.main"
+                        "--lint" "src" "test"
+                        "--fail-level" "error"]}}}

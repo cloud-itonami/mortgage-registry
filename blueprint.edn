@@ -1,0 +1,26 @@
+{:itonami.blueprint/id "mortgage-registry"
+ :itonami.blueprint/name "Real-property-secured lending (mortgage) registry — procedure / public support / organizations, per jurisdiction"
+ :itonami.blueprint/isic "6492"
+ :itonami.blueprint/isic-also ["6419" "6810"]
+ :itonami.blueprint/domain :finance/mortgage-lending
+ :itonami.blueprint/license "AGPL-3.0-or-later"
+ :itonami.blueprint/social-impact [:financial-inclusion :regulatory-transparency :consumer-protection]
+ ;; Read-only reference/archive catalog, like the cloud-itonami-assoc-* family.
+ ;; NOT an Advisor ⊣ Governor actor: it holds no LLM node, proposes nothing,
+ ;; actuates nothing, and therefore needs no governor. Whoever consumes it
+ ;; (cloud-itonami-isic-6492's Credit-LLM ⊣ Credit Governor, a broker, a
+ ;; housing counsellor) keeps their own governor and their own liability.
+ :itonami.blueprint/governor nil
+ :itonami.blueprint/robotics false
+ :itonami.blueprint/required-technologies [:ontology :audit-ledger]
+ :itonami.blueprint/status :public-oss
+ :itonami.blueprint/maturity :seeded-catalog
+ :itonami.blueprint/coverage {:jurisdictions 6
+                              :support-programmes 8
+                              :organizations 16
+                              :seeded-not-complete true}
+ :itonami.blueprint/adr "com-junkawasaki/root 90-docs/adr/2608011200-mortgage-registry-procedure-support-organizations.edn"
+ :itonami.blueprint/siblings ["cloud-itonami-isic-6492"
+                              "cloud-itonami-isic-6810"
+                              "cloud-itonami-isic-6820"
+                              "cloud-itonami-assoc-6492-usa-mba"]}
