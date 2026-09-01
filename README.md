@@ -81,6 +81,75 @@ assertions):
 `(facts/unverified-claims)` returns all of rule 2's gaps as data, so the
 to-do list is queryable rather than buried in prose.
 
+## The observation contract (`mortgage-observation/1`)
+
+`src/mortgage/observation.cljc` is the contract that turns a reading of this
+catalog into a **provenance-preserving, re-observable claim** — and that makes
+it structurally hard for an observation run to look more certain than it is:
+
+1. **Source receipt** (`receipt`) — one frozen record per source reading:
+   https URL, closed-vocabulary source class, language, issuing entity,
+   jurisdiction, `sha256:` content-hash, `observed-at` (when WE fetched) vs
+   `asserted-at` (the source's own date), and the read method. Same bytes
+   re-observed later = a NEW receipt; that is how a refresh is seen. A
+   receipt without a hash is a rumor and is refused.
+2. **Typed observation** (`observation`) — one subject
+   (jurisdiction × plane × subject-id, which must EXIST in this catalog — no
+   phantom entities), bound to a measurement window, its receipts, its
+   verbatim figures and its missingness. Receipts from another jurisdiction
+   are refused (entity separation).
+3. **Currency and area basis** — a monetary figure MUST carry its currency
+   and the date its amount is nominal at; a dimensional figure MUST carry its
+   measurement unit. Nothing is normalized into a comparable number anywhere:
+   amounts at different dates and areas under different standards are not
+   interchangeable (they ride as verbatim text plus basis).
+4. **Method / version** — every artifact carries `mortgage-observation/1`.
+   There is no model on this path anywhere.
+5. **Missingness** — flags come from a closed vocabulary, and an observation
+   that declares NO gaps where the catalog's own `:verification
+   :not-verified` publishes some is REFUSED (silence would claim
+   completeness). The catalog's gaps ride into every proposal.
+6. **Derived observations** (`coverage-observation`, `jurisdiction-observation`)
+   — per-plane absent/located/verbatim counts from `mortgage.plan` plus each
+   jurisdiction's published gaps, under the window. A coverage COUNT — not a
+   market metric, not a valuation, not a score, not a ranking.
+7. **Refresh history** (`refresh`, pure) — append-only in data; the same
+   observation id can never be recorded twice; a re-observation links to what
+   it refreshes via `:obs/refresh-of`.
+8. **Hyakka proposal shape** (`hyakka-proposal`) — the exact claim shape for
+   the `fudosan` corpus: one claim per figure plus one per observed subject,
+   each with its receipt, verbatim value, basis, gaps and `:no-model true`.
+   It is DATA — this contract sends nothing anywhere, and a proposing run
+   that uses it owns the actual proposal.
+9. **Query / readback** (`readback`, `readback-coverage`) — the latest
+   observation at or before an as-of, with every receipt re-validated on the
+   way out (tampered histories are refused, never returned); a miss is
+   reported as a miss, never defaulted.
+
+Every rule refuses loudly (`ex-info` with a `:refusal/code` from the
+documented `refusals` set) instead of degrading quietly.
+
+**Two gaps this contract surfaces instead of papering over.** (a) The
+workspace real-estate scope's `:source-policy :allow` vocabulary has no class
+for state programme-operator publications or government portals — the two
+classes this catalog mostly reads. Receipts carry the true class and proposals
+flag `:proposal/source-class-unmapped`; nothing is relabelled into a scope
+class it does not have. (b) The proposal props (`prop/mortgage-*`) are
+contract-local and NOT registered in the Hyakka ontology; every claim carries
+`:proposal/ontology-registration-pending true` so a proposing run cannot
+quietly present them as already-registered props.
+
+Deterministic fixtures (no network at test time) live in
+`test/fixtures/observation/` and cover temporal refresh, entity separation,
+currency/unit basis, provenance, missingness and query/readback. The NLD
+receipt was recorded live on 2026-09-01 (polite GET, robots respected, no
+login/paywall/captcha) with its sha256 — a re-fetch hash that differs is an
+observation, not a fixture failure.
+
+```bash
+nbb --classpath src:test run-tests.cljs   # 43 tests / 310 assertions, 0 failures
+```
+
 ## Worldwide coverage plan
 
 `src/mortgage/plan.cljc` is the plan for the other ~182 jurisdictions, written
@@ -167,10 +236,14 @@ the superproject's DataScript query plane without ambiguity.
 
 ```
 src/mortgage/facts.cljc      catalog + query fns (canonical; portable .cljc)
+src/mortgage/observation.cljc observation contract over the catalog (receipts,
+                             windows, currency/area basis, missingness, refresh
+                             history, Hyakka proposal shape, readback)
 schema/mortgage-registry.edn DataScript schema for the three planes
 data/datascript-tx.edn       GENERATED projection — never hand-edit
 scripts/emit_tx.cljs         regenerates data/ from src/ (nbb)
 test/mortgage/facts_test.cljc honesty invariants
+test/mortgage/observation_test.cljc deterministic observation fixtures (no network)
 run-tests.cljs               nbb test entry point
 ```
 
