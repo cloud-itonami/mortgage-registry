@@ -81,18 +81,23 @@ assertions):
 `(facts/unverified-claims)` returns all of rule 2's gaps as data, so the
 to-do list is queryable rather than buried in prose.
 
-## The observation contract (`mortgage-observation/1`)
+## The observation contract (`mortgage-observation/2`)
 
 `src/mortgage/observation.cljc` is the contract that turns a reading of this
 catalog into a **provenance-preserving, re-observable claim** — and that makes
-it structurally hard for an observation run to look more certain than it is:
+it structurally hard for an observation run to look more certain than it is.
+v2 keeps every shape /1 froze and adds the auditable-refresh machinery
+(item 10 below); a /1-stamped artifact and a /2-stamped artifact stay
+comparable on purpose:
 
 1. **Source receipt** (`receipt`) — one frozen record per source reading:
    https URL, closed-vocabulary source class, language, issuing entity,
    jurisdiction, `sha256:` content-hash, `observed-at` (when WE fetched) vs
    `asserted-at` (the source's own date), and the read method. Same bytes
    re-observed later = a NEW receipt; that is how a refresh is seen. A
-   receipt without a hash is a rumor and is refused.
+   receipt without a hash is a rumor and is refused; a receipt whose stored
+   id no longer derives from its own hash (edited after freezing) is refused
+   too — never re-branded.
 2. **Typed observation** (`observation`) — one subject
    (jurisdiction × plane × subject-id, which must EXIST in this catalog — no
    phantom entities), bound to a measurement window, its receipts, its
@@ -103,7 +108,7 @@ it structurally hard for an observation run to look more certain than it is:
    measurement unit. Nothing is normalized into a comparable number anywhere:
    amounts at different dates and areas under different standards are not
    interchangeable (they ride as verbatim text plus basis).
-4. **Method / version** — every artifact carries `mortgage-observation/1`.
+4. **Method / version** — every artifact carries `mortgage-observation/2`.
    There is no model on this path anywhere.
 5. **Missingness** — flags come from a closed vocabulary, and an observation
    that declares NO gaps where the catalog's own `:verification
@@ -115,7 +120,8 @@ it structurally hard for an observation run to look more certain than it is:
    market metric, not a valuation, not a score, not a ranking.
 7. **Refresh history** (`refresh`, pure) — append-only in data; the same
    observation id can never be recorded twice; a re-observation links to what
-   it refreshes via `:obs/refresh-of`.
+   it refreshes via `:obs/refresh-of`, and (v2) a link to an observation about
+   a DIFFERENT subject is refused at append time — lineage is per subject.
 8. **Hyakka proposal shape** (`hyakka-proposal`) — the exact claim shape for
    the `fudosan` corpus: one claim per figure plus one per observed subject,
    each with its receipt, verbatim value, basis, gaps and `:no-model true`.
@@ -125,6 +131,18 @@ it structurally hard for an observation run to look more certain than it is:
    observation at or before an as-of, with every receipt re-validated on the
    way out (tampered histories are refused, never returned); a miss is
    reported as a miss, never defaulted.
+10. **Auditable refresh (v2)** (`refresh-delta`, `readback-chain`) — the
+    comparison a refresh owes its predecessor, as an artifact instead of a
+    promise. `refresh-delta` compares two frozen observations of the SAME
+    subject at the VERBATIM level: which figure fields were added, which were
+    REMOVED (reported, never dropped), which changed raw text or basis —
+    both sides carried in full, no numeric difference computed, no amount
+    normalized — plus missingness flag and gap movement, the receipt ids of
+    BOTH generations, and `:delta/kind :unchanged` when nothing moved.
+    `readback-chain` walks the `:obs/refresh-of` lineage back to its origin,
+    oldest first, revalidating every generation on the way out, refusing a
+    truncated or cycling lineage and a chain element about another subject,
+    and returning the pairwise deltas aligned to the chain.
 
 Every rule refuses loudly (`ex-info` with a `:refusal/code` from the
 documented `refusals` set) instead of degrading quietly.
@@ -147,7 +165,7 @@ login/paywall/captcha) with its sha256 — a re-fetch hash that differs is an
 observation, not a fixture failure.
 
 ```bash
-nbb --classpath src:test run-tests.cljs   # 43 tests / 310 assertions, 0 failures
+nbb --classpath src:test run-tests.cljs   # 53 tests / 354 assertions, 0 failures
 ```
 
 ## Worldwide coverage plan

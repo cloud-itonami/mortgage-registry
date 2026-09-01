@@ -3,8 +3,9 @@
   catalog becomes a provenance-preserving, re-observable claim, and what such
   a claim can never become.
 
-  ONE CONTRACT, ELEVEN PARTS. Every observation run against this registry
+  ONE CONTRACT, TWELVE PARTS. Every observation run against this registry
   produces the same shapes, so a refresh can be compared with a prior refresh
+  (part 12 makes that comparison an auditable artifact instead of a promise)
   and a reader can audit what was seen, when, from where, and what was NOT
   seen:
 
@@ -49,6 +50,18 @@
   11. REFUSALS — every rule above refuses loudly (`ex-info` with a
       `:refusal/code`) instead of degrading quietly. `refusals` documents the
       codes.
+  12. AUDITABLE REFRESH (v2) — `refresh-delta` / `readback-chain`: the
+      comparison part 1..11 only promised. `refresh-delta` compares two frozen
+      observations of the SAME subject and reports, at the verbatim level and
+      with both bases carried, which figures were added / removed / changed and
+      which missingness flags and published gaps moved — a removed figure is
+      REPORTED, never dropped, and no numeric difference is ever computed
+      (amounts at different dates are not made comparable here either).
+      `readback-chain` walks the `:obs/refresh-of` lineage back to its origin,
+      revalidating every generation's receipts on the way out, refusing a
+      broken or cycling chain and returning the deltas aligned to the chain.
+      A same-subject re-read whose figures and flags did not move reports
+      `:delta/kind :unchanged` — receipts differing is expected and said.
 
   WHAT THIS CONTRACT NEVER PRODUCES: a valuation, a market score, a ranking
   of jurisdictions / programmes / organizations, an eligibility conclusion
@@ -63,8 +76,12 @@
 ;; --- identity --------------------------------------------------------------
 
 (def contract-version
-  "Every receipt, observation, coverage row and claim carries this string."
-  "mortgage-observation/1")
+  "Every receipt, observation, coverage row, delta and claim carries this
+  string. v2 adds the auditable-refresh machinery (part 12) and changes no
+  shape the /1 contract froze: a /1-stamped artifact and a /2-stamped artifact
+  are comparable by `refresh-delta` on purpose (mixed versions across a chain
+  are expected during the bump, never refused)."
+  "mortgage-observation/2")
 
 ;; --- refusals (loud, never silent degradation) ------------------------------
 
@@ -91,6 +108,7 @@
     :receipt/bad-asserted-at
     :receipt/observed-before-asserted
     :receipt/bad-jurisdiction
+    :receipt/stale-id
     :figure/empty-raw
     :figure/monetary-without-currency
     :figure/bad-currency
@@ -108,10 +126,16 @@
     :observation/silence-claims-completeness
     :observation/refresh-of-unknown
     :observation/refresh-of-self
+    :observation/refresh-of-cross-subject
     :history/duplicate-observation-id
     :history/not-an-observation
     :coverage/bad-universe
     :readback/tampered-receipt
+    :readback/refresh-of-unknown
+    :readback/refresh-cycle
+    :readback/chain-cross-subject
+    :delta/not-an-observation
+    :delta/cross-subject
     :proposal/not-an-observation})
 
 ;; --- vocabulary --------------------------------------------------------------
@@ -185,8 +209,10 @@
   later date are a DIFFERENT receipt, which is how a refresh is seen.
 
   Refuses: missing fields, non-https URLs, classes/methods outside the
-  closed vocabularies, malformed sha256 / dates / jurisdictions, and an
-  observation instant earlier than the date the source asserts."
+  closed vocabularies, malformed sha256 / dates / jurisdictions, an
+  observation instant earlier than the date the source asserts, and a
+  re-validated receipt whose stored :receipt/id no longer matches what its
+  content-hash + observed-at derive (edited after freezing — never re-branded)."
   [{:keys [source-url source-class source-language issuing-entity jurisdiction
            content-hash observed-at asserted-at method]
     :or {method :verbatim-citation} :as r}]
@@ -217,9 +243,19 @@
   (when-not (valid-jurisdiction? jurisdiction)
     (refuse :receipt/bad-jurisdiction
             (str "jurisdiction must be iso3 or iso3-subnational: " jurisdiction)))
-  (assoc r :method method
-           :receipt/id (str "rcpt-" (subs (subs (str content-hash) 7) 0 12)
-                            "-" (subs (str observed-at) 0 10))))
+  (let [derived-id (str "rcpt-" (subs (subs (str content-hash) 7) 0 12)
+                        "-" (subs (str observed-at) 0 10))]
+    ;; a frozen receipt re-validated here must still agree with its own
+    ;; derived identity: an id that no longer matches its hash means the
+    ;; receipt was edited after it was frozen — refuse, never re-brand.
+    (when-some [stated (:receipt/id r)]
+      (when-not (= stated derived-id)
+        (refuse :receipt/stale-id
+                (str "receipt carries :receipt/id " stated
+                     " but its content-hash + observed-at derive " derived-id
+                     " — the receipt was edited after it was frozen"))))
+    (assoc r :method method
+           :receipt/id derived-id)))
 
 (defn receipt-valid?
   "True when `receipt` accepts `r` without refusing."
@@ -372,11 +408,35 @@
 
 ;; --- refresh history (pure; data, not a side-effecting ledger) ---------------
 
+(def ^:private frozen-observation?
+  "The same frozen-identity check `hyakka-proposal` uses: an observation this
+  contract produced carries `:obs/id` and `:obs/method`."
+  (every-pred #(contains? % :obs/id) #(contains? % :obs/method)))
+
+(def ^:private figure-basis-keys
+  "The keys over which two figures of the same field are considered to have
+  changed: the verbatim raw text plus its basis. Nothing outside these keys is
+  compared, and nothing is normalized out of them."
+  [:figure/raw :figure/monetary? :figure/currency :figure/nominal-at
+   :figure/area-value :figure/area-unit])
+
+(defn- subject-key
+  "The string key of a subject for equality checks (entity separation)."
+  [{:keys [jurisdiction plane subject-id]}]
+  [(str jurisdiction) (str plane) (str subject-id)])
+
+(defn- figure-index
+  "Map of :figure/field -> figure, last-one-wins, over a vector of figures."
+  [figures]
+  (into {} (map (fn [f] [(:figure/field f) f])) figures))
+
 (defn refresh
   "Append `obs` to `history` (a vector of observations) and return the new
   history. Pure — the caller owns persistence. Refuses the same observation
-  id twice, a `:obs/refresh-of` pointing at an id not in the history, and a
-  refresh pointing at itself."
+  id twice, a `:obs/refresh-of` pointing at an id not in the history, a
+  refresh pointing at itself, and (v2) a refresh link whose parent is an
+  observation about a DIFFERENT subject — lineage is per subject, so the
+  entity separation holds at append time, not only at readback time."
   [history obs]
   (when-not (and (contains? obs :obs/id) (contains? obs :obs/method))
     (refuse :history/not-an-observation
@@ -388,22 +448,27 @@
     (when-let [ro (:obs/refresh-of obs)]
       (when (= ro id)
         (refuse :observation/refresh-of-self "an observation cannot refresh itself"))
-      (when-not (some #(= (:obs/id %) ro) history)
+      (if-let [parent (some #(when (= (:obs/id %) ro) %) history)]
+        (when-not (= (subject-key (:obs/subject parent))
+                     (subject-key (:obs/subject obs)))
+          (refuse :observation/refresh-of-cross-subject
+                  (str "observation " id " claims to refresh " ro
+                       ", which is about another subject — lineage is per subject")))
         (refuse :observation/refresh-of-unknown
                 (str ":obs/refresh-of " ro " is not in the history"))))
     (conj history obs)))
 
 (defn- revalidate!
-  "Re-run receipt validation over every receipt an observation carries —
-  readback refuses to return observations whose receipts no longer validate
-  (tamper check)."
+  "Re-run receipt validation over every receipt an observation carries, then
+  re-validate every figure once — readback refuses to return observations
+  whose receipts or figures no longer validate (tamper check)."
   [obs]
   (doseq [r (:obs/receipts obs)]
     (when-not (receipt-valid? r)
       (refuse :readback/tampered-receipt
-              (str "receipt for " (:receipt/id r) " no longer validates — refusing readback")))
-    (doseq [f (:obs/figures obs)]
-      (validate-figure f))))
+              (str "receipt for " (:receipt/id r) " no longer validates — refusing readback"))))
+  (doseq [f (:obs/figures obs)]
+    (validate-figure f)))
 
 (defn readback
   "Query shape: the LATEST observation for a subject whose window closes at or
@@ -441,6 +506,179 @@
     (or latest
         {:readback/miss true :readback/as-of as-of
          :readback/note "no coverage observation at or before this date"})))
+
+;; --- auditable refresh (v2, part 12): delta + lineage readback ---------------
+
+(defn refresh-delta
+  "The auditable comparison of two frozen observations of the SAME subject:
+  `prior` is what it refreshes, `next` is the re-observation. Pure and
+  deterministic — equal inputs give an equal delta.
+
+  Reports, at the VERBATIM level with both bases carried:
+    :delta/figures-added    fields present in next, absent in prior
+    :delta/figures-removed  fields present in prior, absent in next — a figure
+                            the source stopped publishing is REPORTED here,
+                            never dropped (missing is unmeasured, not gone)
+    :delta/figures-changed  same field whose verbatim raw or basis moved;
+                            carries {:delta/prior-figure :delta/next-figure}
+                            in full — no numeric difference is computed, no
+                            amount is normalized, no 'how much' is answered
+    :delta/figures-unchanged count of fields equal on raw and basis
+    :delta/flags-added / :delta/flags-removed
+    :delta/not-verified-added / :delta/not-verified-removed
+    :delta/prior-receipts / :delta/next-receipts  receipt-id vectors — the
+                            provenance of BOTH sides (receipt ids differing
+                            across a refresh is expected: new reading, new
+                            receipt, even for the same bytes)
+    :delta/prior-window / :delta/next-window
+    :delta/kind             :unchanged when no figure, flag or gap moved —
+                            the 'nothing moved' case an auditor looks for
+
+  Refuses anything that is not a frozen observation and any cross-subject
+  comparison (entity separation — a delta between different subjects would
+  silently compare two things that never refreshed each other). Mixed
+  contract versions are comparable on purpose: a /1 observation and its /2
+  refresh are a legitimate pair."
+  [prior next]
+  (doseq [[label o] [["prior" prior] ["next" next]]]
+    (when-not (frozen-observation? o)
+      (refuse :delta/not-an-observation
+              (str label " must be a frozen observation from `observation`, not a raw map"))))
+  (when-not (= (subject-key (:obs/subject prior))
+               (subject-key (:obs/subject next)))
+    (refuse :delta/cross-subject
+            (str "refresh-delta compares one subject with itself: "
+                 (pr-str (subject-key (:obs/subject prior)))
+                 " vs " (pr-str (subject-key (:obs/subject next))))))
+  (let [p-figs (figure-index (:obs/figures prior))
+        n-figs (figure-index (:obs/figures next))
+        p-fields (set (keys p-figs))
+        n-fields (set (keys n-figs))
+        added (vec (sort (remove p-fields n-fields)))
+        removed (vec (sort (remove n-fields p-fields)))
+        shared (sort (filter n-fields p-fields))
+        changed (for [f shared
+                      :when (not= (select-keys (get p-figs f) figure-basis-keys)
+                                  (select-keys (get n-figs f) figure-basis-keys))]
+                  {:delta/field f
+                   :delta/prior-figure (get p-figs f)
+                   :delta/next-figure (get n-figs f)})
+        changed (vec (sort-by :delta/field changed))
+        unchanged (count (for [f shared
+                               :when (= (select-keys (get p-figs f) figure-basis-keys)
+                                        (select-keys (get n-figs f) figure-basis-keys))]
+                           f))
+        {:obs/keys [missingness]} prior
+        {:keys [flags p-flags not-verified p-nv]}
+        {:flags (vec (sort (:flags (:obs/missingness next))))
+         :p-flags (vec (sort (:flags missingness)))
+         :not-verified (vec (sort (:not-verified (:obs/missingness next))))
+         :p-nv (vec (sort (:not-verified missingness)))}
+        flags-added (vec (remove (set p-flags) flags))
+        flags-removed (vec (remove (set flags) p-flags))
+        nv-added (vec (remove (set p-nv) not-verified))
+        nv-removed (vec (remove (set not-verified) p-nv))]
+    (cond-> {:delta/id (str "delta-" (:obs/id prior) "-to-" (:obs/id next))
+             :obs/method contract-version
+             :delta/prior-id (:obs/id prior)
+             :delta/next-id (:obs/id next)
+             :delta/prior-window (:obs/window prior)
+             :delta/next-window (:obs/window next)
+             :delta/prior-receipts (mapv :receipt/id (:obs/receipts prior))
+             :delta/next-receipts (mapv :receipt/id (:obs/receipts next))
+             :delta/figures-added added
+             :delta/figures-removed removed
+             :delta/figures-changed changed
+             :delta/figures-unchanged unchanged
+             :delta/flags-added flags-added
+             :delta/flags-removed flags-removed
+             :delta/not-verified-added nv-added
+             :delta/not-verified-removed nv-removed
+             :delta/non-goals ["verbatim-level audit of what moved between two reads"
+                               "no numeric difference, no normalization, no comparability claim"
+                               "not a price change, not a market movement, not a valuation"]}
+      (and (empty? added) (empty? removed) (empty? changed)
+           (empty? flags-added) (empty? flags-removed)
+           (empty? nv-added) (empty? nv-removed))
+      (assoc :delta/kind :unchanged))))
+
+(defn- chain-links
+  "The observed refresh links of a history: {:obs/id -> :obs/refresh-of}."
+  [history]
+  (into {} (keep (fn [o] (when-let [ro (:obs/refresh-of o)]
+                           [(:obs/id o) ro]))
+                 history)))
+
+(defn readback-chain
+  "The refresh-lineage query: every generation of a subject's observations at
+  or before `as-of`, oldest first, each revalidated on the way out (the same
+  tamper posture as `readback` — a tampered receipt ANYWHERE in the chain
+  refuses the whole readback), with the pairwise `refresh-delta`s aligned to
+  the chain (`:readback/deltas` i is the delta from generation i-1 to i; nil
+  for the origin).
+
+  Refuses loudly on a lineage that append-only `refresh` cannot produce but a
+  hand-assembled or truncated history can: a `:obs/refresh-of` pointing at an
+  id absent from the history (`:readback/refresh-of-unknown`), a cycle
+  (`:readback/refresh-cycle`), and a chain element whose subject differs from
+  the queried subject (`:readback/chain-cross-subject` — lineage is per
+  subject, entity separation holds along it).
+
+  A subject with no observation at or before `as-of` returns the same
+  `:readback/miss` shape `readback` returns."
+  [history {:keys [jurisdiction plane subject-id as-of]}]
+  (when-not (iso-date? as-of)
+    (refuse :observation/bad-window (str "as-of must be an ISO date: " as-of)))
+  (let [by-id (into {} (map (fn [o] [(:obs/id o) o])) history)
+        links (chain-links history)
+        hits (->> history
+                  (filter #(let [s (:obs/subject %)]
+                             (and (= (str (:jurisdiction s)) (str jurisdiction))
+                                  (= (name (:plane s)) (name plane))
+                                  (= (str (:subject-id s)) (str subject-id))
+                                  (not (pos? (compare (:to (:obs/window %)) as-of))))))
+                  (sort-by #(get-in % [:obs/window :to]))
+                  vec)
+        latest (peek hits)]
+    (if-not latest
+      {:readback/miss true
+       :readback/subject {:jurisdiction jurisdiction :plane plane :subject-id subject-id}
+       :readback/as-of as-of
+       :readback/note "no observation at or before this date — missing is unmeasured"}
+      (loop [cur latest
+             chain-rev [latest]
+             seen #{(:obs/id latest)}]
+        (let [parent-id (get links (:obs/id cur))]
+          (cond
+            (nil? parent-id)
+            (let [chain (vec (rseq (vec chain-rev)))]
+              (doseq [o chain]
+                (revalidate! o)
+                (when-not (= (subject-key (:obs/subject o))
+                             (subject-key (:obs/subject latest)))
+                  (refuse :readback/chain-cross-subject
+                          (str "chain observation " (:obs/id o)
+                               " is about another subject — lineage is per subject"))))
+              {:readback/subject {:jurisdiction jurisdiction
+                                  :plane plane
+                                  :subject-id subject-id}
+               :readback/as-of as-of
+               :readback/chain chain
+               :readback/deltas (into [nil]
+                                      (map (fn [[p n]] (refresh-delta p n))
+                                           (partition 2 1 chain)))
+               :readback/generations (count chain)})
+            (contains? seen parent-id)
+            (refuse :readback/refresh-cycle
+                    (str ":obs/refresh-of cycle at " (:obs/id cur) " -> " parent-id))
+            (not (contains? by-id parent-id))
+            (refuse :readback/refresh-of-unknown
+                    (str ":obs/refresh-of " parent-id " is not in the history — "
+                         "truncated lineage is refused, never silently cut"))
+            :else
+            (recur (get by-id parent-id)
+                   (conj chain-rev (get by-id parent-id))
+                   (conj seen parent-id))))))))
 
 ;; --- Hyakka proposal (shape only; nothing is sent by this contract) ----------
 
