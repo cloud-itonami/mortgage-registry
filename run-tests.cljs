@@ -7,10 +7,11 @@
 (ns run-tests
   (:require [cljs.test :as t]
             [mortgage.facts-test]
-            [mortgage.plan-test]))
+            [mortgage.plan-test]
+            [mortgage.observation-test]))
 
 (defmethod t/report [::t/default :end-run-tests] [m]
   (when-not (t/successful? m)
     (set! (.-exitCode js/process) 1)))
 
-(t/run-tests 'mortgage.facts-test 'mortgage.plan-test)
+(t/run-tests 'mortgage.facts-test 'mortgage.plan-test 'mortgage.observation-test)

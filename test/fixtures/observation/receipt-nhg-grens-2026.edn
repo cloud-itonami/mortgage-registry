@@ -1,0 +1,27 @@
+;; receipt-nhg-grens-2026.edn — an ARCHIVED SOURCE RECEIPT fixture.
+;;
+;; Recorded live 2026-09-01T05:03:29Z: a polite GET (no login, no paywall, no
+;; captcha; robots.txt of www.nhg.nl disallows only /bin/ and /umbraco/) of the
+;; exact URL the seeded NLD catalog entry cites, answered 200 text/html;
+;; charset=utf-8, 100859 bytes, sha256 below. The page was verified to carry
+;; the two figures the catalog entry asserts ("470.000" and "498.200").
+;;
+;; The HTML bytes themselves are NOT archived here — the content-hash is the
+;; receipt's identity, and a refresh that re-fetches and finds a different
+;; hash is exactly what `mortgage.observation` models. If the live page has
+;; changed since 2026-09-01, the re-fetch hash will differ: that is an
+;; observation, not a fixture failure.
+
+{:source-url "https://www.nhg.nl/nhg-actueel/nhg-grens-in-2026-vastgesteld-op-470000/"
+ :source-class :official-programme-operator
+ :source-language "nl"
+ :issuing-entity "Stichting Waarborgfonds Eigen Woningen (WEW) — Nationale Hypotheek Garantie"
+ :jurisdiction "NLD"
+ :content-hash "sha256:0c728b7741b77e9ef7444975bb98e885458b4703912daf169364f0bd3837db46"
+ :observed-at "2026-09-01T05:03:29Z"
+ :asserted-at "2026-01-01"
+ :method :verbatim-citation
+ :http-status 200
+ :content-type "text/html; charset=utf-8"
+ :bytes 100859
+ :verified-substrings ["470.000" "498.200"]}
