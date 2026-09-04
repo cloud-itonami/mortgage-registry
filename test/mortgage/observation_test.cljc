@@ -16,6 +16,16 @@
 (def ^:private fixture-receipt
   (edn/read-string (fs/readFileSync "test/fixtures/observation/receipt-nhg-grens-2026.edn" "utf8")))
 
+(defn- varied-receipt
+  "A second-generation reading of the SAME page: different observed-at and a
+  different content-hash (the source moved between reads) — a NEW receipt, as
+  the contract defines a refresh to be. Re-frozen from the RAW fixture so the
+  derived :receipt/id matches the new hash."
+  []
+  (obs/receipt (assoc fixture-receipt
+                      :observed-at "2026-09-01T12:00:00Z"
+                      :content-hash "sha256:4444444444444444444444444444444444444444444444444444444444444444")))
+
 (defn- refusal-of
   "Run `f`; return the refusal code it raised, or :no-refusal when it returned
   normally, or :no-refusal-code when it threw something this contract did not
@@ -50,7 +60,7 @@
 ;; --- 0. contract identity ----------------------------------------------------
 
 (deftest contract-identity-is-named
-  (is (= "mortgage-observation/1" obs/contract-version))
+  (is (= "mortgage-observation/2" obs/contract-version))
   (is (seq obs/refusals) "the refusal codes are documented, not incidental")
   (is (contains? obs/receipt-classes (:source-class nhg-receipt)))
   (is (contains? obs/unmapped-in-scope (:source-class nhg-receipt))
@@ -301,7 +311,7 @@
         "every claim carries the not-verified gaps — none may drop them")
     (is (every? #(contains? (:claim/qualifiers %) :no-model) claims)
         "every claim carries :no-model — there is no model on this path")
-    (is (every? #(= "mortgage-observation/1" (:deterministic-extractor (:claim/qualifiers %))) claims)
+    (is (every? #(= "mortgage-observation/2" (:deterministic-extractor (:claim/qualifiers %))) claims)
         "method/version rides on every claim")))
 
 ;; --- 6. derived coverage observation ----------------------------------------------
@@ -390,3 +400,235 @@
            (:obs/id (obs/readback-coverage h "2026-09-01"))))
     (is (:readback/miss (obs/readback-coverage h "2026-07-31"))
         "before the first coverage row there is only a miss")))
+
+;; --- 9. auditable refresh (v2): refresh-delta + readback-chain ----------------
+
+(defn- nhg-observation-varied
+  "A second-generation NLD/NHG observation whose fixture text models what a
+  refresh LOOKS like on the wire: the 2026 figure moved (verbatim new text),
+  the energy-measures figure is unchanged, and a flag was added. The values
+  are FIXTURE TEXT — this test asserts nothing about the real programme."
+  [to & {:keys [refresh-of moved? drop-energy?]}]
+  (obs/observation
+   {:obs/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"}
+    :obs/window {:from "2026-08-01" :to to}
+    :obs/receipts [(varied-receipt)]
+    :obs/figures
+    (vec (concat
+          [{:figure/field "guarantee-limit-2026"
+            :figure/raw (if moved?
+                          "De NHG-grens per 1 januari 2027 is € 450.000"
+                          "De NHG-grens per 1 januari 2026 is € 470.000")
+            :figure/monetary? true :figure/currency "EUR" :figure/nominal-at "2026-01-01"}]
+          (when-not drop-energy?
+            [{:figure/field "guarantee-limit-2026-with-energy-measures"
+              :figure/raw "Bij meefinanciering van energiebesparende voorzieningen is de grens € 498.200"
+              :figure/monetary? true :figure/currency "EUR" :figure/nominal-at "2026-01-01"}])))
+    :obs/missingness
+    {:flags (if moved? [:legal-construction-unverified :rate-or-ceiling-unverified]
+                [:legal-construction-unverified])
+     :not-verified ["waarborgfondsconstructie / achtervang detail"]}
+    :obs/refresh-of refresh-of}))
+
+(deftest refresh-delta-reports-what-moved-verbatim-with-both-bases
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (nhg-observation-varied "2026-09-02" :moved? true)
+        d (obs/refresh-delta g1 g2)]
+    (is (= "delta-obs-NLD-support-nld.nhg-2026-09-01-to-obs-NLD-support-nld.nhg-2026-09-02"
+           (:delta/id d)) "deterministic id from the two generation ids")
+    (is (= "mortgage-observation/2" (:obs/method d)) "the delta carries the contract version")
+    (is (= 1 (count (:delta/figures-changed d))))
+    (let [c (first (:delta/figures-changed d))]
+      (is (= "guarantee-limit-2026" (:delta/field c)))
+      (is (str/includes? (get-in c [:delta/prior-figure :figure/raw]) "470.000")
+          "the prior verbatim text is carried")
+      (is (str/includes? (get-in c [:delta/next-figure :figure/raw]) "450.000")
+          "the next verbatim text is carried")
+      (is (= "EUR" (get-in c [:delta/prior-figure :figure/currency])))
+      (is (= "EUR" (get-in c [:delta/next-figure :figure/currency])))
+      (is (= "2026-01-01" (get-in c [:delta/prior-figure :figure/nominal-at]))
+          "both bases ride on the delta — neither is dropped or rewritten"))
+    (is (= 1 (:delta/figures-unchanged d)) "the unchanged field is counted, not reported")
+    (is (= [:rate-or-ceiling-unverified] (:delta/flags-added d)))
+    (is (= [] (:delta/figures-added d)) "nothing was added")
+    (is (= [] (:delta/figures-removed d)) "nothing was removed")
+    (is (= ["rcpt-0c728b7741b7-2026-09-01"] (:delta/prior-receipts d))
+        "the prior generation's RECEIPT id is the provenance of one side")
+    (is (= ["rcpt-444444444444-2026-09-01"] (:delta/next-receipts d))
+        "the next generation's receipt id is the provenance of the other — a new reading is a new receipt")
+    (is (not (str/includes? (str d) "amount-normalized"))
+        "no normalized amount exists anywhere in the delta")
+    (is (seq (:delta/non-goals d)) "the non-goals statement rides on the delta")
+    (is (nil? (:delta/kind d)) "something moved, so this is not the unchanged kind")
+    (is (= d (obs/refresh-delta g1 g2)) "equal inputs, equal delta — deterministic")))
+
+(deftest refresh-delta-reports-a-removed-figure-instead-of-dropping-it
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (nhg-observation-varied "2026-09-02" :drop-energy? true)
+        d (obs/refresh-delta g1 g2)]
+    (is (= ["guarantee-limit-2026-with-energy-measures"] (:delta/figures-removed d))
+        "a figure the source stopped publishing is REPORTED — missing is unmeasured, not gone")
+    (is (= [] (:delta/figures-changed d)))
+    (is (nil? (:delta/kind d)) "a removal is a change, not 'nothing moved'")))
+
+(deftest refresh-delta-unchanged-kind-for-a-same-subject-re-read
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (nhg-observation-varied "2026-09-02")
+        d (obs/refresh-delta g1 g2)]
+    (is (= :unchanged (:delta/kind d))
+        "same subject, same verbatim figures, same flags: 'nothing moved' is itself the audit result")
+    (is (not= (:delta/prior-receipts d) (:delta/next-receipts d))
+        "receipt ids still differ — a new reading is a new receipt, and the delta says so")))
+
+(deftest refresh-delta-refuses-non-observations-and-cross-subjects
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (nhg-observation-varied "2026-09-02")]
+    (is (= :delta/not-an-observation
+           (refusal-of #(obs/refresh-delta {:obs/id "obs-x"} g2)))
+        "a raw map is not a frozen observation")
+    (is (= :delta/not-an-observation
+           (refusal-of #(obs/refresh-delta g1 (dissoc g2 :obs/method)))))
+    (let [jpn-obs (obs/observation
+                   {:obs/subject {:jurisdiction "JPN" :plane :support :subject-id "jpn.flat35"}
+                    :obs/window {:from "2026-08-01" :to "2026-09-01"}
+                    :obs/receipts [(obs/receipt
+                                    {:source-url "https://www.flat35.com/loan/lineup/flat35/conditions/index.html"
+                                     :source-class :official-programme-operator
+                                     :source-language "ja" :issuing-entity "住宅金融支援機構 (JHF)"
+                                     :jurisdiction "JPN"
+                                     :content-hash "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                                     :observed-at "2026-09-01T05:10:00Z" :asserted-at "2026-08-01"})]
+                    :obs/figures [{:figure/field "loan-amount-range"
+                                   :figure/raw "100万円以上1億2,000万円以下"
+                                   :figure/monetary? true :figure/currency "JPY"
+                                   :figure/nominal-at "2026-08-01"}]
+                    :obs/missingness {:flags [:rate-or-ceiling-unverified]
+                                      :not-verified ["current-year 住宅ローン控除 rate/ceiling"]}})]
+      (is (= :delta/cross-subject
+             (refusal-of #(obs/refresh-delta g1 jpn-obs)))
+          "a delta between different subjects is refused — they never refreshed each other"))))
+
+(deftest refresh-refuses-a-link-to-another-subjects-observation
+  (let [g1 (nhg-observation "2026-09-01")
+        jpn-obs (obs/observation
+                 {:obs/subject {:jurisdiction "JPN" :plane :support :subject-id "jpn.flat35"}
+                  :obs/window {:from "2026-08-01" :to "2026-09-02"}
+                  :obs/receipts [(obs/receipt
+                                  {:source-url "https://www.flat35.com/loan/lineup/flat35/conditions/index.html"
+                                   :source-class :official-programme-operator
+                                   :source-language "ja" :issuing-entity "住宅金融支援機構 (JHF)"
+                                   :jurisdiction "JPN"
+                                   :content-hash "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                                   :observed-at "2026-09-01T05:10:00Z" :asserted-at "2026-08-01"})]
+                  :obs/missingness {:flags [:rate-or-ceiling-unverified]
+                                    :not-verified ["current-year 住宅ローン控除 rate/ceiling"]}
+                  :obs/refresh-of (:obs/id g1)}
+                 )
+        history (obs/refresh [] g1)]
+    (is (= :observation/refresh-of-cross-subject
+           (refusal-of #(obs/refresh history jpn-obs)))
+        "lineage is per subject: the append itself refuses, not only the readback")))
+
+(deftest readback-chain-returns-the-lineage-with-aligned-deltas
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (obs/observation (assoc (nhg-observation-varied "2026-09-02" :moved? true)
+                                   :obs/refresh-of (:obs/id g1)))
+        g3 (obs/observation (assoc (nhg-observation-varied "2026-09-03" :moved? true
+                                                             :drop-energy? true)
+                                   :obs/refresh-of (:obs/id g2)))
+        history (-> [] (obs/refresh g1) (obs/refresh g2) (obs/refresh g3))
+        {:keys [readback/chain readback/deltas readback/generations]}
+        (obs/readback-chain history {:jurisdiction "NLD" :plane :support
+                                     :subject-id "nld.nhg" :as-of "2026-09-03"})]
+    (is (= 3 generations) "all three generations come back")
+    (is (= ["obs-NLD-support-nld.nhg-2026-09-01"
+            "obs-NLD-support-nld.nhg-2026-09-02"
+            "obs-NLD-support-nld.nhg-2026-09-03"]
+           (mapv :obs/id chain)) "oldest first")
+    (is (= 3 (count deltas)))
+    (is (nil? (first deltas)) "the origin has no predecessor — its delta slot is nil")
+    (is (= ["guarantee-limit-2026"] (mapv :delta/field (:delta/figures-changed (second deltas))))
+        "generation 1 -> 2 changed the 2026 figure")
+    (is (= ["guarantee-limit-2026-with-energy-measures"]
+           (:delta/figures-removed (peek deltas)))
+        "generation 2 -> 3 lost the energy-measures figure, and the chain says where")
+    (let [early (obs/readback-chain history {:jurisdiction "NLD" :plane :support
+                                             :subject-id "nld.nhg" :as-of "2026-09-01"})]
+      (is (= 1 (:readback/generations early))
+          "as-of before the first refresh reads a one-generation chain")
+      (is (= [nil] (:readback/deltas early))))
+    (is (:readback/miss
+         (obs/readback-chain history {:jurisdiction "JPN" :plane :support
+                                      :subject-id "jpn.flat35" :as-of "2026-09-03"}))
+        "an unobserved subject is a miss, never a neighbouring chain")))
+
+(deftest readback-chain-refuses-a-broken-or-cycling-lineage
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (obs/observation (assoc (nhg-observation-varied "2026-09-02" :moved? true)
+                                   :obs/refresh-of (:obs/id g1)))]
+    ;; a hand-assembled history whose origin is missing: refresh() can never
+    ;; produce this, so readback refuses instead of silently truncating
+    (is (= :readback/refresh-of-unknown
+           (refusal-of #(obs/readback-chain [g2] {:jurisdiction "NLD" :plane :support
+                                                  :subject-id "nld.nhg" :as-of "2026-09-02"})))
+        "truncated lineage is refused, never cut")
+    ;; a cycle: only a hand-assembled history can carry one
+    (let [c1 (obs/observation (assoc (nhg-observation-varied "2026-09-02" :moved? true)
+                                     :obs/refresh-of "obs-NLD-support-nld.nhg-2026-09-03"))
+          c2 (obs/observation (assoc (nhg-observation-varied "2026-09-03" :moved? true)
+                                     :obs/refresh-of (:obs/id c1)))]
+      (is (= :readback/refresh-cycle
+             (refusal-of #(obs/readback-chain [c1 c2] {:jurisdiction "NLD" :plane :support
+                                                       :subject-id "nld.nhg" :as-of "2026-09-03"})))))))
+
+(deftest readback-chain-refuses-a-tampered-generation
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (obs/observation (assoc (nhg-observation-varied "2026-09-02" :moved? true)
+                                   :obs/refresh-of (:obs/id g1)))
+        tampered-g1 (update-in g1 [:obs/receipts 0 :content-hash]
+                               (constantly "sha256:deadbeef"))]
+    (is (= :readback/tampered-receipt
+           (refusal-of #(obs/readback-chain [tampered-g1 g2]
+                                            {:jurisdiction "NLD" :plane :support
+                                             :subject-id "nld.nhg" :as-of "2026-09-02"})))
+        "a malformed receipt hash ANYWHERE in the lineage refuses the whole readback")))
+
+(deftest a-receipt-edited-after-freezing-is-refused-not-rebranded
+  (let [edited (assoc nhg-receipt :content-hash "sha256:5555555555555555555555555555555555555555555555555555555555555555")]
+    (is (= :receipt/stale-id
+           (refusal-of #(obs/receipt edited)))
+        "the stored :receipt/id no longer derives from the edited hash — refuse")
+    (is (= :receipt/stale-id
+           (refusal-of #(obs/observation
+                         {:obs/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"}
+                          :obs/window {:from "2026-08-01" :to "2026-09-01"}
+                          :obs/receipts [edited]})))
+        "an observation carrying such a receipt is refused too")
+    ;; re-freezing a CONSISTENT frozen receipt is fine — same id comes back
+    (is (= (:receipt/id nhg-receipt) (:receipt/id (obs/receipt nhg-receipt)))
+        "a consistent frozen receipt re-validates to itself")))
+
+(deftest readback-chain-refuses-a-cross-subject-lineage-at-readout
+  ;; refresh() refuses a cross-subject link (v2), so this history must be
+  ;; hand-assembled — which is exactly the defense-in-depth case: a readout
+  ;; over an assembled/imported history re-checks what the append checked.
+  (let [foreign (obs/observation
+                 {:obs/subject {:jurisdiction "JPN" :plane :support :subject-id "jpn.flat35"}
+                  :obs/window {:from "2026-08-01" :to "2026-09-01"}
+                  :obs/receipts [(obs/receipt
+                                  {:source-url "https://www.flat35.com/loan/lineup/flat35/conditions/index.html"
+                                   :source-class :official-programme-operator
+                                   :source-language "ja" :issuing-entity "住宅金融支援機構 (JHF)"
+                                   :jurisdiction "JPN"
+                                   :content-hash "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                                   :observed-at "2026-09-01T05:10:00Z" :asserted-at "2026-08-01"})]
+                  :obs/missingness {:flags [:rate-or-ceiling-unverified]
+                                    :not-verified ["current-year 住宅ローン控除 rate/ceiling"]}})
+        g2 (obs/observation (assoc (nhg-observation-varied "2026-09-02" :moved? true)
+                                   :obs/refresh-of (:obs/id foreign)))]
+    (is (= :readback/chain-cross-subject
+           (refusal-of #(obs/readback-chain [foreign g2]
+                                            {:jurisdiction "NLD" :plane :support
+                                             :subject-id "nld.nhg" :as-of "2026-09-02"})))
+        "the queried subject's latest observation links to a lineage element
+         about another subject — refused at readout, never returned")))
