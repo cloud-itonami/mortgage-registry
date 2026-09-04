@@ -60,7 +60,7 @@
 ;; --- 0. contract identity ----------------------------------------------------
 
 (deftest contract-identity-is-named
-  (is (= "mortgage-observation/2" obs/contract-version))
+  (is (= "mortgage-observation/3" obs/contract-version))
   (is (seq obs/refusals) "the refusal codes are documented, not incidental")
   (is (contains? obs/receipt-classes (:source-class nhg-receipt)))
   (is (contains? obs/unmapped-in-scope (:source-class nhg-receipt))
@@ -311,7 +311,7 @@
         "every claim carries the not-verified gaps — none may drop them")
     (is (every? #(contains? (:claim/qualifiers %) :no-model) claims)
         "every claim carries :no-model — there is no model on this path")
-    (is (every? #(= "mortgage-observation/2" (:deterministic-extractor (:claim/qualifiers %))) claims)
+    (is (every? #(= "mortgage-observation/3" (:deterministic-extractor (:claim/qualifiers %))) claims)
         "method/version rides on every claim")))
 
 ;; --- 6. derived coverage observation ----------------------------------------------
@@ -436,7 +436,7 @@
         d (obs/refresh-delta g1 g2)]
     (is (= "delta-obs-NLD-support-nld.nhg-2026-09-01-to-obs-NLD-support-nld.nhg-2026-09-02"
            (:delta/id d)) "deterministic id from the two generation ids")
-    (is (= "mortgage-observation/2" (:obs/method d)) "the delta carries the contract version")
+    (is (= "mortgage-observation/3" (:obs/method d)) "the delta carries the contract version")
     (is (= 1 (count (:delta/figures-changed d))))
     (let [c (first (:delta/figures-changed d))]
       (is (= "guarantee-limit-2026" (:delta/field c)))
@@ -632,3 +632,175 @@
                                              :subject-id "nld.nhg" :as-of "2026-09-02"})))
         "the queried subject's latest observation links to a lineage element
          about another subject — refused at readout, never returned")))
+
+;; --- 10. figure-level attribution (v3, part 13) -------------------------------
+
+(defn- second-receipt
+  "A second, DIFFERENT-source receipt for the same NLD subject (the regulator
+  page that carries the 2027 limit, say). Fixture identity only — the URL is
+  invented fixture text, the hash is a placeholder constant, and no test
+  asserts anything about the real source."
+  []
+  (obs/receipt
+   {:source-url "https://example-fixtures.test/nld/regulator-page"
+    :source-class :official-regulator
+    :source-language "nl" :issuing-entity "Autoriteit Financiële Markten"
+    :jurisdiction "NLD"
+    :content-hash "sha256:6666666666666666666666666666666666666666666666666666666666666666"
+    :observed-at "2026-09-01T09:00:00Z" :asserted-at "2026-08-01"}))
+
+(deftest sole-receipt-observation-attributes-every-figure
+  (let [o (nhg-observation "2026-09-01")]
+    (is (every? #(= "rcpt-0c728b7741b7-2026-09-01" (:figure/receipt-id %))
+                (:obs/figures o))
+        "with one receipt, its id is the attribution — deterministic, not optional")
+    (is (every? #(some? (obs/figure-receipt o %)) (:obs/figures o))
+        "figure-receipt resolves every attribution back to the carried receipt")
+    (is (= (:source-url nhg-receipt)
+           (:source-url (obs/figure-receipt o (first (:obs/figures o))))))))
+
+(deftest multi-receipt-observation-without-attribution-is-refused
+  (let [r2 (second-receipt)
+        base {:obs/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"}
+              :obs/window {:from "2026-08-01" :to "2026-09-01"}
+              :obs/receipts [nhg-receipt r2]
+              :obs/figures
+              [{:figure/field "guarantee-limit-2026"
+                :figure/raw "De NHG-grens per 1 januari 2026 is € 470.000"
+                :figure/monetary? true :figure/currency "EUR"
+                :figure/nominal-at "2026-01-01"}]
+              :obs/missingness {:flags [:legal-construction-unverified]
+                                :not-verified ["waarborgfondsconstructie / achtervang detail"]}}]
+    (is (= :figure/ambiguous-receipt-attribution
+           (refusal-of #(obs/observation base)))
+        "two receipts and a figure with no :figure/receipt-id is ambiguous
+         provenance — refused, never guessed")
+    (is (= :figure/unattributable-receipt
+           (refusal-of
+            #(obs/observation
+              (assoc base :obs/figures
+                     [{:figure/field "guarantee-limit-2026"
+                       :figure/raw "De NHG-grens per 1 januari 2026 is € 470.000"
+                       :figure/monetary? true :figure/currency "EUR"
+                       :figure/nominal-at "2026-01-01"
+                       :figure/receipt-id "rcpt-nowhere-0000-0000-00"}]))))
+        "an explicit id no carried receipt answers to is refused")
+    ;; naming the receipt that evidenced each figure is the honest path
+    (is (some?
+         (obs/observation
+          (assoc base :obs/figures
+                 [{:figure/field "guarantee-limit-2026"
+                   :figure/raw "De NHG-grens per 1 januari 2026 is € 470.000"
+                   :figure/monetary? true :figure/currency "EUR"
+                   :figure/nominal-at "2026-01-01"
+                   :figure/receipt-id (:receipt/id nhg-receipt)}
+                  {:figure/field "guarantee-limit-2027"
+                   :figure/raw "De NHG-grens per 1 januari 2027 is € 450.000"
+                   :figure/monetary? true :figure/currency "EUR"
+                   :figure/nominal-at "2027-01-01"
+                   :figure/receipt-id (:receipt/id r2)}])))
+        "explicit per-figure attribution under several receipts is accepted")))
+
+(deftest figure-claims-cite-their-own-receipt
+  (let [r2 (second-receipt)
+        o (obs/observation
+           {:obs/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"}
+            :obs/window {:from "2026-08-01" :to "2026-09-01"}
+            :obs/receipts [nhg-receipt r2]
+            :obs/figures
+            [{:figure/field "guarantee-limit-2026"
+              :figure/raw "De NHG-grens per 1 januari 2026 is € 470.000"
+              :figure/monetary? true :figure/currency "EUR"
+              :figure/nominal-at "2026-01-01"
+              :figure/receipt-id (:receipt/id nhg-receipt)}
+             {:figure/field "guarantee-limit-2027"
+              :figure/raw "De NHG-grens per 1 januari 2027 is € 450.000"
+              :figure/monetary? true :figure/currency "EUR"
+              :figure/nominal-at "2027-01-01"
+              :figure/receipt-id (:receipt/id r2)}]
+            :obs/missingness {:flags [:legal-construction-unverified]
+                              :not-verified ["waarborgfondsconstructie / achtervang detail"]}})
+        claims (obs/hyakka-proposal o)
+        c2026 (first (filter #(str/includes? (:claim/id %) "guarantee-limit-2026") claims))
+        c2027 (first (filter #(str/includes? (:claim/id %) "guarantee-limit-2027") claims))]
+    (is (= (:receipt/id nhg-receipt) (:claim/receipt-id c2026)))
+    (is (= (:source-url nhg-receipt) (get-in c2026 [:claim/receipt :source-url]))
+        "the 2026 claim cites the receipt that evidenced IT")
+    (is (= (:receipt/id r2) (:claim/receipt-id c2027)))
+    (is (= (:source-url r2) (get-in c2027 [:claim/receipt :source-url]))
+        "the 2027 claim cites a DIFFERENT receipt — per-figure provenance")
+    (is (= 2 (count (distinct (map :claim/receipt-id
+                                   [c2026 c2027]))))
+        "two figures, two evidencing readings — no claim hangs on the wrong source")))
+
+(deftest pre-attribution-frozen-figures-fall-back-to-the-sole-receipt
+  ;; a frozen /1 or /2 artifact predates :figure/receipt-id; its claims must
+  ;; still cite a basis — the sole receipt — and must NOT inherit the peek
+  ;; basis when the observation carries several receipts (ambiguity is
+  ;; carried as ambiguity).
+  (let [o (nhg-observation "2026-09-01")
+        stripped (update o :obs/figures
+                         #(mapv (fn [f] (dissoc f :figure/receipt-id)) %))
+        claims (obs/hyakka-proposal stripped)
+        fig (first (filter #(str/includes? (:claim/id %) "guarantee-limit-2026") claims))]
+    (is (= (:source-url nhg-receipt) (get-in fig [:claim/receipt :source-url]))
+        "sole-receipt fallback: the claim still cites THE receipt")
+    (is (nil? (:claim/receipt-id fig))
+        "no invented :claim/receipt-id — the attribution predates the field")
+    (let [r2 (second-receipt)
+          multi (assoc stripped :obs/receipts [nhg-receipt r2])
+          claims2 (obs/hyakka-proposal multi)
+          fig2 (first (filter #(str/includes? (:claim/id %) "guarantee-limit-2026") claims2))]
+      (is (nil? (:claim/receipt fig2))
+          "several receipts and no attribution: NO single basis is claimed —
+           not whichever receipt sorted last")
+      (is (seq (:claim/receipts fig2))
+          "the full receipt set still rides on the claim for the reader"))))
+
+(deftest refresh-delta-reports-re-attribution-as-its-own-row
+  ;; same verbatim text, different evidencing source: the content did not
+  ;; move, the ATTRIBUTION did — and the delta must say which.
+  (let [r2 (second-receipt)
+        g1 (nhg-observation "2026-09-01")
+        g2 (obs/observation
+            {:obs/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"}
+             :obs/window {:from "2026-08-01" :to "2026-09-02"}
+             :obs/receipts [nhg-receipt r2]
+             :obs/figures
+             [{:figure/field "guarantee-limit-2026"
+               :figure/raw "De NHG-grens per 1 januari 2026 is € 470.000"
+               :figure/monetary? true :figure/currency "EUR"
+               :figure/nominal-at "2026-01-01"
+               :figure/receipt-id (:receipt/id r2)}
+              {:figure/field "guarantee-limit-2026-with-energy-measures"
+               :figure/raw "Bij meefinanciering van energiebesparende voorzieningen is de grens € 498.200"
+               :figure/monetary? true :figure/currency "EUR"
+               :figure/nominal-at "2026-01-01"
+               :figure/receipt-id (:receipt/id nhg-receipt)}]
+             :obs/missingness {:flags [:legal-construction-unverified]
+                               :not-verified ["waarborgfondsconstructie / achtervang detail"]}
+             :obs/refresh-of (:obs/id g1)})
+        d (obs/refresh-delta g1 g2)]
+    (is (= [] (:delta/figures-changed d))
+        "no verbatim text moved — this is NOT a content change")
+    (is (= ["guarantee-limit-2026"] (mapv :delta/field (:delta/re-attributed d)))
+        "the re-attribution is reported as itself")
+    (let [ra (first (:delta/re-attributed d))]
+      (is (= "rcpt-0c728b7741b7-2026-09-01" (:delta/prior-receipt-id ra)))
+      (is (= (:receipt/id r2) (:delta/next-receipt-id ra)))
+      (is (= (:source-url nhg-receipt) (:delta/prior-source-url ra)))
+      (is (= (:source-url r2) (:delta/next-source-url ra))
+          "both sides carried in full — the auditor sees both sources"))
+    (is (nil? (:delta/kind d)) "an attribution move is a move — not :unchanged")
+    (is (= d (obs/refresh-delta g1 g2)) "equal inputs, equal delta")))
+
+(deftest refresh-delta-a-new-receipt-of-the-same-source-is-not-a-re-attribution
+  ;; g1's figures are attributed to the NHG receipt; g2 re-reads the SAME
+  ;; page (same URL, new bytes — the v2 varied fixture) and attributes to the
+  ;; new receipt: the evidencing SOURCE did not move, so no re-attribution
+  ;; row — and the v2 :unchanged kind is preserved.
+  (let [g1 (nhg-observation "2026-09-01")
+        g2 (nhg-observation-varied "2026-09-02")
+        d (obs/refresh-delta g1 g2)]
+    (is (= [] (:delta/re-attributed d)) "no source moved — receipt ids differ, sources do not")
+    (is (= :unchanged (:delta/kind d)) "the v2 unchanged kind is preserved")))

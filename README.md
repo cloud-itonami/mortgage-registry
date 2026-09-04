@@ -81,14 +81,14 @@ assertions):
 `(facts/unverified-claims)` returns all of rule 2's gaps as data, so the
 to-do list is queryable rather than buried in prose.
 
-## The observation contract (`mortgage-observation/2`)
+## The observation contract (`mortgage-observation/3`)
 
 `src/mortgage/observation.cljc` is the contract that turns a reading of this
 catalog into a **provenance-preserving, re-observable claim** — and that makes
 it structurally hard for an observation run to look more certain than it is.
-v2 keeps every shape /1 froze and adds the auditable-refresh machinery
-(item 10 below); a /1-stamped artifact and a /2-stamped artifact stay
-comparable on purpose:
+v2 added the auditable-refresh machinery (item 10); v3 adds figure-level
+provenance attribution (item 11). A /1- or /2-stamped artifact and a
+/3-stamped artifact stay comparable on purpose:
 
 1. **Source receipt** (`receipt`) — one frozen record per source reading:
    https URL, closed-vocabulary source class, language, issuing entity,
@@ -108,7 +108,7 @@ comparable on purpose:
    measurement unit. Nothing is normalized into a comparable number anywhere:
    amounts at different dates and areas under different standards are not
    interchangeable (they ride as verbatim text plus basis).
-4. **Method / version** — every artifact carries `mortgage-observation/2`.
+4. **Method / version** — every artifact carries `mortgage-observation/3`.
    There is no model on this path anywhere.
 5. **Missingness** — flags come from a closed vocabulary, and an observation
    that declares NO gaps where the catalog's own `:verification
@@ -125,6 +125,11 @@ comparable on purpose:
 8. **Hyakka proposal shape** (`hyakka-proposal`) — the exact claim shape for
    the `fudosan` corpus: one claim per figure plus one per observed subject,
    each with its receipt, verbatim value, basis, gaps and `:no-model true`.
+   (v3) A figure claim cites the receipt that EVIDENCED that figure
+   (`:claim/receipt-id` + `:claim/receipt`) — the observation's sole receipt
+   when the generation predates attribution, and NO single basis when a
+   multi-receipt observation carries no attribution (ambiguity is carried as
+   ambiguity, never dressed as provenance).
    It is DATA — this contract sends nothing anywhere, and a proposing run
    that uses it owns the actual proposal.
 9. **Query / readback** (`readback`, `readback-coverage`) — the latest
@@ -139,10 +144,22 @@ comparable on purpose:
     both sides carried in full, no numeric difference computed, no amount
     normalized — plus missingness flag and gap movement, the receipt ids of
     BOTH generations, and `:delta/kind :unchanged` when nothing moved.
+    (v3) `:delta/re-attributed` reports fields whose verbatim text did NOT
+    move but whose evidencing receipt now answers to a DIFFERENT source — a
+    re-attribution is visible as itself, never folded into a content change.
     `readback-chain` walks the `:obs/refresh-of` lineage back to its origin,
     oldest first, revalidating every generation on the way out, refusing a
     truncated or cycling lineage and a chain element about another subject,
     and returning the pairwise deltas aligned to the chain.
+11. **Figure-level attribution (v3)** (`:figure/receipt-id`, `figure-receipt`)
+    — which RECEIPT evidenced each verbatim figure. A multi-source
+    observation must not hang every figure on whichever receipt happens to
+    sort last — that is fabricated provenance. A figure naming no receipt is
+    attributed to the observation's sole receipt, and only while there is
+    exactly one; under several receipts the attribution is ambiguous and
+    REFUSED, never guessed. An id no carried receipt answers to is refused.
+    A frozen /1 or /2 artifact predates attribution and still reads back;
+    its figure claims fall back to the sole receipt.
 
 Every rule refuses loudly (`ex-info` with a `:refusal/code` from the
 documented `refusals` set) instead of degrading quietly.
@@ -165,7 +182,7 @@ login/paywall/captcha) with its sha256 — a re-fetch hash that differs is an
 observation, not a fixture failure.
 
 ```bash
-nbb --classpath src:test run-tests.cljs   # 53 tests / 354 assertions, 0 failures
+nbb --classpath src:test run-tests.cljs   # 59 tests / 379 assertions, 0 failures
 ```
 
 ## Worldwide coverage plan
@@ -256,7 +273,8 @@ the superproject's DataScript query plane without ambiguity.
 src/mortgage/facts.cljc      catalog + query fns (canonical; portable .cljc)
 src/mortgage/observation.cljc observation contract over the catalog (receipts,
                              windows, currency/area basis, missingness, refresh
-                             history, Hyakka proposal shape, readback)
+                             history, figure-level receipt attribution, Hyakka
+                             proposal shape, readback)
 schema/mortgage-registry.edn DataScript schema for the three planes
 data/datascript-tx.edn       GENERATED projection — never hand-edit
 scripts/emit_tx.cljs         regenerates data/ from src/ (nbb)
