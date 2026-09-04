@@ -3,7 +3,7 @@
   catalog becomes a provenance-preserving, re-observable claim, and what such
   a claim can never become.
 
-  ONE CONTRACT, TWELVE PARTS. Every observation run against this registry
+  ONE CONTRACT, THIRTEEN PARTS. Every observation run against this registry
   produces the same shapes, so a refresh can be compared with a prior refresh
   (part 12 makes that comparison an auditable artifact instead of a promise)
   and a reader can audit what was seen, when, from where, and what was NOT
@@ -63,6 +63,23 @@
       A same-subject re-read whose figures and flags did not move reports
       `:delta/kind :unchanged` — receipts differing is expected and said.
 
+  13. FIGURE-LEVEL ATTRIBUTION (v3) — `:figure/receipt-id` on every figure,
+      `figure-receipt` to resolve it: which RECEIPT evidenced each verbatim
+      figure. A multi-source observation (programme page + regulator page)
+      must not hang every figure on whichever receipt happens to sort last —
+      that is fabricated provenance. A figure that names no receipt is
+      attributed to the observation's sole receipt, and ONLY while there is
+      exactly one; under several receipts the attribution is ambiguous and
+      refused, never guessed (fresh observations only — a frozen /1 or /2
+      artifact predates attribution and still reads back). An id no carried
+      receipt answers to is refused. `hyakka-proposal`
+      pins each figure claim's `:claim/receipt` to the figure's OWN receipt
+      and names it `:claim/receipt-id`; `refresh-delta` reports
+      `:delta/re-attributed` — fields whose verbatim text did not move but
+      whose evidencing receipt now cites a DIFFERENT source — so a
+      re-attribution is visible as itself and never folded into a content
+      change.
+
   WHAT THIS CONTRACT NEVER PRODUCES: a valuation, a market score, a ranking
   of jurisdictions / programmes / organizations, an eligibility conclusion
   about any person (the catalog discloses signals, it never adjudicates), or
@@ -77,11 +94,11 @@
 
 (def contract-version
   "Every receipt, observation, coverage row, delta and claim carries this
-  string. v2 adds the auditable-refresh machinery (part 12) and changes no
-  shape the /1 contract froze: a /1-stamped artifact and a /2-stamped artifact
-  are comparable by `refresh-delta` on purpose (mixed versions across a chain
-  are expected during the bump, never refused)."
-  "mortgage-observation/2")
+  string. v3 adds figure-level provenance attribution (part 13) and changes
+  no shape the /1 and /2 contracts froze: a /1- or /2-stamped artifact and a
+  /3-stamped artifact are comparable by `refresh-delta` on purpose (mixed
+  versions across a chain are expected during the bump, never refused)."
+  "mortgage-observation/3")
 
 ;; --- refusals (loud, never silent degradation) ------------------------------
 
@@ -136,6 +153,8 @@
     :readback/chain-cross-subject
     :delta/not-an-observation
     :delta/cross-subject
+    :figure/ambiguous-receipt-attribution
+    :figure/unattributable-receipt
     :proposal/not-an-observation})
 
 ;; --- vocabulary --------------------------------------------------------------
@@ -307,7 +326,14 @@
   zero receipts, receipts from another jurisdiction (entity separation),
   missingness flags outside the closed vocabulary, and — the honesty rule —
   an observation that declares NO gaps where the catalog's own
-  `:verification :not-verified` block publishes some."
+  `:verification :not-verified` block publishes some.
+
+  Part 13 (v3): every figure carries `:figure/receipt-id` — the receipt that
+  evidenced it. An explicit id must name a receipt the observation carries
+  (`:figure/unattributable-receipt`); a figure that names none is attributed
+  to the observation's sole receipt and ONLY while there is exactly one —
+  under several receipts the attribution is ambiguous and refused
+  (`:figure/ambiguous-receipt-attribution`), never guessed."
   [{:obs/keys [subject window receipts figures missingness refresh-of]
     :or {figures [] missingness {:flags [] :not-verified []}}
     :as o}]
@@ -333,8 +359,24 @@
                 (str "receipt jurisdiction " (:jurisdiction r)
                      " cannot evidence an observation about " jurisdiction))))
     (let [validated-figures (mapv validate-figure figures)
+          receipt-id-set (into #{} (map #(str (:receipt/id %))) receipts)
           {:keys [flags not-verified]} missingness
           unknown (remove #(contains? missingness-flags %) flags)]
+      ;; part 13 (fresh artifacts): resolve each figure's evidencing receipt.
+      ;; An explicit id must name a carried receipt; none under several
+      ;; receipts is ambiguous — never guessed.
+      (doseq [vf validated-figures]
+        (if-some [claimed (:figure/receipt-id vf)]
+          (when-not (contains? receipt-id-set (str claimed))
+            (refuse :figure/unattributable-receipt
+                    (str "figure \"" (:figure/field vf) "\" cites receipt " claimed
+                         ", which this observation does not carry")))
+          (when (> (count receipt-id-set) 1)
+            (refuse :figure/ambiguous-receipt-attribution
+                    (str "figure \"" (:figure/field vf) "\" carries no :figure/receipt-id "
+                         "but the observation has " (count receipt-id-set)
+                         " receipts — name the receipt that evidenced it, "
+                         "or split the observation")))))
       (when (seq unknown)
         (refuse :observation/unknown-missingness-flag
                 (str "missingness flags outside the closed vocabulary: " (pr-str (vec unknown)))))
@@ -345,13 +387,34 @@
                   (str jurisdiction " publishes " (count catalog-gaps)
                        " not-verified gap(s); an observation that declares none would claim "
                        "completeness the catalog itself refuses — carry them or narrow them")))
-        (assoc o
-               :obs/method contract-version
-               :obs/id (str "obs-" jurisdiction "-" (name plane) "-" subject-id "-" to)
-               :obs/figures validated-figures
-               :obs/missingness {:flags (vec flags)
-                                 :not-verified declared-not-verified
-                                 :catalog/not-verified catalog-gaps})))))
+        (let [sole-receipt-id (when (= 1 (count receipt-id-set))
+                                (str (:receipt/id (first receipts))))
+              attributed-figures
+              (mapv (fn [vf]
+                      (cond-> vf
+                        (nil? (:figure/receipt-id vf))
+                        (assoc :figure/receipt-id sole-receipt-id)))
+                    validated-figures)]
+          (assoc o
+                 :obs/method contract-version
+                 :obs/id (str "obs-" jurisdiction "-" (name plane) "-" subject-id "-" to)
+                 :obs/figures attributed-figures
+                 :obs/missingness {:flags (vec flags)
+                                   :not-verified declared-not-verified
+                                   :catalog/not-verified catalog-gaps}))))))
+
+(defn figure-receipt
+  "Part 13 (v3): the receipt that evidenced one figure — the resolved
+  `:figure/receipt-id` looked up among the observation's receipts. Returns
+  nil for a figure that names no receipt (a frozen /1 or /2 artifact whose
+  generation predates attribution: the claim falls back to the observation's
+  receipts, it does not invent one) and for an id no carried receipt answers
+  to (the same tamper posture as readback — a figure citing a receipt the
+  observation does not carry is refused upstream, never fabricated here)."
+  [obs {:figure/keys [receipt-id]}]
+  (when-some [rid (some-> receipt-id str)]
+    (some #(when (= (str (:receipt/id %)) rid) %)
+          (:obs/receipts obs))))
 
 ;; --- derived observations (counts, never market metrics) ---------------------
 
@@ -429,6 +492,12 @@
   "Map of :figure/field -> figure, last-one-wins, over a vector of figures."
   [figures]
   (into {} (map (fn [f] [(:figure/field f) f])) figures))
+
+(defn- receipt-by-id
+  "The receipt of `o` whose :receipt/id is `rid` (string compare), or nil."
+  [o rid]
+  (some #(when (= (str (:receipt/id %)) (str rid)) %)
+        (:obs/receipts o)))
 
 (defn refresh
   "Append `obs` to `history` (a vector of observations) and return the new
@@ -524,6 +593,13 @@
                             in full — no numeric difference is computed, no
                             amount is normalized, no 'how much' is answered
     :delta/figures-unchanged count of fields equal on raw and basis
+    :delta/re-attributed    (v3) fields whose verbatim text did NOT move but
+                            whose evidencing receipt now answers to a
+                            DIFFERENT source: {:delta/field
+                            :delta/prior-receipt-id :delta/next-receipt-id
+                            :delta/prior-source-url :delta/next-source-url}
+                            — a re-attribution is visible as itself, never
+                            folded into a content change
     :delta/flags-added / :delta/flags-removed
     :delta/not-verified-added / :delta/not-verified-removed
     :delta/prior-receipts / :delta/next-receipts  receipt-id vectors — the
@@ -577,7 +653,38 @@
         flags-added (vec (remove (set p-flags) flags))
         flags-removed (vec (remove (set flags) p-flags))
         nv-added (vec (remove (set p-nv) not-verified))
-        nv-removed (vec (remove (set not-verified) p-nv))]
+        nv-removed (vec (remove (set not-verified) p-nv))
+        changed-fields (set (map :delta/field changed))
+        ;; part 13 (v3): the attribution a generation EFFECTIVELY carries —
+        ;; the explicit :figure/receipt-id, else the observation's sole
+        ;; receipt (the same fallback `observation` freezes and
+        ;; `figure-receipt` resolves; nil when neither applies, e.g. a
+        ;; multi-receipt artifact that predates attribution).
+        effective-rid (fn [o f]
+                        (or (some-> (:figure/receipt-id f) str)
+                            (let [rs (:obs/receipts o)]
+                              (when (= 1 (count rs))
+                                (str (:receipt/id (first rs)))))))
+        ;; part 13 (v3): a RE-ATTRIBUTION is its own delta row — the field's
+        ;; verbatim text did not move (it is not in :delta/figures-changed),
+        ;; but the receipt now cited answers to a DIFFERENT source. Carried
+        ;; with both sides in full; never folded into a content change.
+        re-attributed
+        (vec (sort-by :delta/field
+                      (for [f shared
+                            :when (let [pr (effective-rid prior (get p-figs f))
+                                        nr (effective-rid next (get n-figs f))]
+                                    (and (not (contains? changed-fields f))
+                                         (not= pr nr)
+                                         (not= (:source-url (receipt-by-id prior pr))
+                                               (:source-url (receipt-by-id next nr)))))]
+                        (let [pr (effective-rid prior (get p-figs f))
+                              nr (effective-rid next (get n-figs f))]
+                          {:delta/field f
+                           :delta/prior-receipt-id pr
+                           :delta/next-receipt-id nr
+                           :delta/prior-source-url (:source-url (receipt-by-id prior pr))
+                           :delta/next-source-url (:source-url (receipt-by-id next nr))}))))]
     (cond-> {:delta/id (str "delta-" (:obs/id prior) "-to-" (:obs/id next))
              :obs/method contract-version
              :delta/prior-id (:obs/id prior)
@@ -590,6 +697,7 @@
              :delta/figures-removed removed
              :delta/figures-changed changed
              :delta/figures-unchanged unchanged
+             :delta/re-attributed re-attributed
              :delta/flags-added flags-added
              :delta/flags-removed flags-removed
              :delta/not-verified-added nv-added
@@ -598,6 +706,7 @@
                                "no numeric difference, no normalization, no comparability claim"
                                "not a price change, not a market movement, not a valuation"]}
       (and (empty? added) (empty? removed) (empty? changed)
+           (empty? re-attributed)
            (empty? flags-added) (empty? flags-removed)
            (empty? nv-added) (empty? nv-removed))
       (assoc :delta/kind :unchanged))))
@@ -705,8 +814,13 @@
   "The exact claim shape a proposing run would carry to the `fudosan` corpus:
   one claim per verbatim figure plus one subject-level claim, each with its
   receipt, its currency/area basis, its missingness, and the no-model /
-  deterministic-extractor qualifiers. The proposal is DATA — this contract
-  performs no transmission, no outreach and no publishing.
+  deterministic-extractor qualifiers. Part 13 (v3): a figure claim cites the
+  receipt that EVIDENCED that figure (`:claim/receipt-id` +
+  `:claim/receipt`) — the observation's sole receipt when the generation
+  predates attribution, and NO single basis when a multi-receipt observation
+  carries no attribution (ambiguity is carried as ambiguity, never dressed
+  as provenance). The proposal is DATA — this contract performs no
+  transmission, no outreach and no publishing.
 
   Refuses anything that is not a frozen observation (`:obs/id` + method
   present), so a half-built map can never masquerade as a proposal."
@@ -744,22 +858,38 @@
                   :always (assoc :proposal/ontology-registration-pending true))}
         figure-claims
         (for [f (:obs/figures obs)]
-          (merge common
-                 {:claim/id (str "fudosan/mortgage-registry/"
-                                 (:jurisdiction subject) "/" (name (:plane subject)) "/"
-                                 (:subject-id subject) "/" (:figure/field f) "/" (:to window))
-                  :claim/prop (get claim-props
-                                   (if (= :support (:plane subject))
-                                     :support-figure (:plane subject)))
-                  :claim/value (:figure/raw f)}
-                 (when (:figure/monetary? f)
-                   {:claim/currency (:figure/currency f)
-                    :claim/nominal-at (:figure/nominal-at f)
-                    :claim/basis-note "nominal at own date — not comparable across dates or currencies without a stated basis"})
-                 (when (seq (str (:figure/area-value f)))
-                   {:claim/area-value (:figure/area-value f)
-                    :claim/area-unit (:figure/area-unit f)
-                    :claim/area-basis-note "area under its own measurement standard — not interchangeable"})))
+          (let [;; part 13 (v3): each figure claim cites the receipt that
+                ;; EVIDENCED it (:claim/receipt-id + :claim/receipt), falling
+                ;; back to the observation's sole receipt when the generation
+                ;; predates attribution. Under several receipts and no
+                ;; explicit attribution the claim carries NO single basis —
+                ;; ambiguity is carried as ambiguity, never dressed as
+                ;; provenance.
+                fr (figure-receipt obs f)
+                sole (when (= 1 (count receipts)) (first receipts))
+                fig-src (or fr sole)]
+            (merge common
+                   {:claim/id (str "fudosan/mortgage-registry/"
+                                   (:jurisdiction subject) "/" (name (:plane subject)) "/"
+                                   (:subject-id subject) "/" (:figure/field f) "/" (:to window))
+                    :claim/prop (get claim-props
+                                     (if (= :support (:plane subject))
+                                       :support-figure (:plane subject)))
+                    :claim/value (:figure/raw f)}
+                   {:claim/receipt (when fig-src
+                                     (select-keys fig-src
+                                                  [:source-url :content-hash :observed-at
+                                                   :asserted-at :source-class :method]))}
+                   (when (:figure/receipt-id f)
+                     {:claim/receipt-id (str (:figure/receipt-id f))})
+                   (when (:figure/monetary? f)
+                     {:claim/currency (:figure/currency f)
+                      :claim/nominal-at (:figure/nominal-at f)
+                      :claim/basis-note "nominal at own date — not comparable across dates or currencies without a stated basis"})
+                   (when (seq (str (:figure/area-value f)))
+                     {:claim/area-value (:figure/area-value f)
+                      :claim/area-unit (:figure/area-unit f)
+                      :claim/area-basis-note "area under its own measurement standard — not interchangeable"}))))
         subject-claim
         [(merge common
                 {:claim/id (str "fudosan/mortgage-registry/"
