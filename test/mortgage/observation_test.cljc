@@ -60,7 +60,7 @@
 ;; --- 0. contract identity ----------------------------------------------------
 
 (deftest contract-identity-is-named
-  (is (= "mortgage-observation/3" obs/contract-version))
+  (is (= "mortgage-observation/4" obs/contract-version))
   (is (seq obs/refusals) "the refusal codes are documented, not incidental")
   (is (contains? obs/receipt-classes (:source-class nhg-receipt)))
   (is (contains? obs/unmapped-in-scope (:source-class nhg-receipt))
@@ -311,7 +311,7 @@
         "every claim carries the not-verified gaps — none may drop them")
     (is (every? #(contains? (:claim/qualifiers %) :no-model) claims)
         "every claim carries :no-model — there is no model on this path")
-    (is (every? #(= "mortgage-observation/3" (:deterministic-extractor (:claim/qualifiers %))) claims)
+    (is (every? #(= "mortgage-observation/4" (:deterministic-extractor (:claim/qualifiers %))) claims)
         "method/version rides on every claim")))
 
 ;; --- 6. derived coverage observation ----------------------------------------------
@@ -436,7 +436,7 @@
         d (obs/refresh-delta g1 g2)]
     (is (= "delta-obs-NLD-support-nld.nhg-2026-09-01-to-obs-NLD-support-nld.nhg-2026-09-02"
            (:delta/id d)) "deterministic id from the two generation ids")
-    (is (= "mortgage-observation/3" (:obs/method d)) "the delta carries the contract version")
+    (is (= "mortgage-observation/4" (:obs/method d)) "the delta carries the contract version")
     (is (= 1 (count (:delta/figures-changed d))))
     (let [c (first (:delta/figures-changed d))]
       (is (= "guarantee-limit-2026" (:delta/field c)))
@@ -804,3 +804,294 @@
         d (obs/refresh-delta g1 g2)]
     (is (= [] (:delta/re-attributed d)) "no source moved — receipt ids differ, sources do not")
     (is (= :unchanged (:delta/kind d)) "the v2 unchanged kind is preserved")))
+
+;; --- 11. typed event inputs (v4, part 14) --------------------------------------
+;;
+;; FIXTURE TEXT ONLY. Every announcement string below is invented fixture
+;; prose for the mechanics test — no test asserts anything about the real
+;; NHG programme, its real future, or any real publication. A real event
+;; run records what the source actually published, under its own receipt.
+
+(defn- nhg-event
+  "A frozen event over the NLD/NHG subject, built on the live receipt fixture
+  (same posture as the observation fixtures: the receipt is real, the
+  announcement text is fixture prose)."
+  [effective-at & {:keys [announcement-raw kind figures flags refresh-of]}]
+  (obs/event
+   {:event/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"}
+    :event/kind (or kind :parameter-change-announced)
+    :event/announcement-raw
+    (or announcement-raw
+        "De NHG-grens per 1 januari 2026 is € 470.000 (fixture announcement text)")
+    :event/effective-at effective-at
+    :event/receipts [nhg-receipt]
+    :event/figures (or figures [])
+    :event/missingness {:flags (or flags []) :not-verified []}
+    :event/refresh-of refresh-of}))
+
+(deftest event-freezes-with-a-deterministic-id-and-the-source-stated-effective-date
+  (let [ev (nhg-event "2026-01-01")]
+    (is (= "evt-NLD-support-nld.nhg-:parameter-change-announced-2026-01-01" (:event/id ev))
+        "deterministic id: subject + kind + source-stated effective date")
+    (is (= "mortgage-observation/4" (:event/method ev)) "events carry the contract version")
+    (is (= "2026-01-01" (:event/effective-at ev))
+        "the effective date is the SOURCE's own stated date — carried, never computed")
+    (is (contains? obs/event-kinds (:event/kind ev)) "the kind is from the closed vocabulary")))
+
+(deftest events-refuse-unprovenanced-and-phantom-input
+  (is (= :event/unknown-kind
+         (refusal-of #(nhg-event "2026-01-01" :kind :a-good-feeling-about-rates)))
+      "event kinds are closed — an ad-hoc kind is refused")
+  (is (= :event/unknown-subject
+         (refusal-of
+          #(obs/event
+            {:event/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.starterslening"}
+             :event/kind :programme-terminated
+             :event/announcement-raw "the scheme ends (fixture text)"
+             :event/effective-at "2026-01-01"
+             :event/receipts [nhg-receipt]})))
+      "SVn is a published GAP — announcing an event about it as if seeded is fabrication")
+  (is (= :event/bad-effective-at
+         (refusal-of #(nhg-event "01-01-2026")))
+      "effective-at is a typed ISO date, not a formatted guess")
+  (is (= :event/missing-field
+         (refusal-of #(nhg-event nil)))
+      "an event without its effective date is incomplete")
+  (is (= :event/empty-announcement
+         (refusal-of #(nhg-event "2026-01-01" :announcement-raw "   ")))
+      "an event without the source's own words is a rumor")
+  (is (= :event/no-receipts
+         (refusal-of
+          #(obs/event
+            {:event/subject {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"}
+             :event/kind :parameter-change-announced
+             :event/announcement-raw "fixture text"
+             :event/effective-at "2026-01-01"
+             :event/receipts []})))
+      "an event without a receipt is a rumor")
+  (is (= :event/cross-jurisdiction-receipt
+         (refusal-of
+          #(obs/event
+            {:event/subject {:jurisdiction "JPN" :plane :support :subject-id "jpn.flat35"}
+             :event/kind :parameter-change-announced
+             :event/announcement-raw "fixture text"
+             :event/effective-at "2026-01-01"
+             :event/receipts [nhg-receipt]})))
+      "a NLD receipt cannot evidence a JPN announcement — entity separation")
+  (is (= :event/unknown-missingness-flag
+         (refusal-of #(nhg-event "2026-01-01" :flags [:vibes-unverified])))
+      "missingness flags stay in the closed vocabulary"))
+
+(deftest event-figures-carry-the-same-basis-discipline
+  (is (= :figure/monetary-without-currency
+         (refusal-of
+          #(nhg-event "2026-01-01"
+                      :figures [{:figure/field "new-limit"
+                                 :figure/raw "€ 450.000"
+                                 :figure/monetary? true}])))
+      "a figure an announcement publishes carries its currency or is refused")
+  (let [ev (nhg-event "2026-01-01"
+                      :figures [{:figure/field "new-limit"
+                                 :figure/raw "€ 450.000"
+                                 :figure/monetary? true
+                                 :figure/currency "EUR"
+                                 :figure/nominal-at "2027-01-01"}])]
+    (is (= "EUR" (get-in ev [:event/figures 0 :figure/currency])))
+    (is (= "2027-01-01" (get-in ev [:event/figures 0 :figure/nominal-at]))
+        "the figure keeps its OWN nominal date — the announcement date and the
+         nominal date are different facts and both ride")))
+
+(deftest event-lineage-events-refresh-events-never-observations
+  (let [g1 (nhg-event "2026-01-01")
+        g2 (nhg-event "2027-01-01" :refresh-of (:event/id g1)
+                      :announcement-raw "De NHG-grens per 1 januari 2027 is € 450.000 (fixture)")
+        history (-> [] (obs/refresh-event g1) (obs/refresh-event g2))
+        obs (nhg-observation "2026-09-01")]
+    (is (= 2 (count history)) "append-only: both announcements remain")
+    (is (= :event/duplicate-event-id
+           (refusal-of #(obs/refresh-event history g1)))
+        "the same event id cannot be recorded twice")
+    (is (= :event/refresh-of-unknown
+           (refusal-of #(obs/refresh-event [] (nhg-event "2027-01-01" :refresh-of "evt-nowhere"))))
+        "a link to an unrecorded event is refused")
+    (is (= :event/refresh-of-self
+           (refusal-of #(obs/refresh-event [] (nhg-event "2026-01-01"
+                                                         :refresh-of "evt-NLD-support-nld.nhg-:parameter-change-announced-2026-01-01")))))
+    (is (= :event/refresh-of-observation
+           (refusal-of #(obs/refresh-event (obs/refresh [] obs)
+                                           (nhg-event "2027-01-01" :refresh-of (:obs/id obs)))))
+        "events refresh events, observations refresh observations — never across kinds")
+    (is (= :event/not-an-event
+           (refusal-of #(obs/refresh-event history {:event/id "evt-x"})))
+        "a raw map is not a frozen event")))
+
+(deftest event-readback-dates-by-effective-at-and-revalidates
+  (let [g1 (nhg-event "2026-01-01")
+        g2 (nhg-event "2027-01-01" :refresh-of (:event/id g1)
+                      :announcement-raw "De NHG-grens per 1 januari 2027 is € 450.000 (fixture)")
+        history (-> [] (obs/refresh-event g1) (obs/refresh-event g2))]
+    (is (= (:event/id g1) (:event/id (obs/readback-events history
+                                    {:jurisdiction "NLD" :plane :support
+                                     :subject-id "nld.nhg" :as-of "2026-06-30"})))
+        "as-of between the two effective dates reads the first announcement —
+         an announcement takes effect when the source says, not when we read it")
+    (is (= (:event/id g2) (:event/id (obs/readback-events history
+                                    {:jurisdiction "NLD" :plane :support
+                                     :subject-id "nld.nhg" :as-of "2027-01-01"}))))
+    (is (= (:event/id g2)
+           (:event/id (obs/readback-events history
+                        {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"
+                         :as-of "2027-06-30" :kind :parameter-change-announced})))
+        "the kind filter keeps the matching kind's latest announcement")
+    (is (:event/miss (obs/readback-events history
+                          {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"
+                           :as-of "2027-06-30" :kind :programme-terminated}))
+        "no termination was ever announced — the miss is a miss, not a default")
+    (is (:event/miss (obs/readback-events history
+                          {:jurisdiction "JPN" :plane :support :subject-id "jpn.flat35"
+                           :as-of "2027-06-30"})))
+    (let [tampered (update-in g1 [:event/receipts 0 :content-hash]
+                              (constantly "sha256:deadbeef"))]
+      (is (= :readback/tampered-receipt
+             (refusal-of #(obs/readback-events (obs/refresh-event [] tampered)
+                            {:jurisdiction "NLD" :plane :support :subject-id "nld.nhg"
+                             :as-of "2026-06-30"})))
+          "a tampered receipt refuses the event readback, never returns"))))
+
+(deftest event-delta-reports-what-moved-verbatim
+  (let [g1 (nhg-event "2026-01-01")
+        g2 (nhg-event "2027-01-01" :refresh-of (:event/id g1)
+                      :announcement-raw "De NHG-grens per 1 januari 2027 is € 450.000 (fixture)")
+        d (obs/event-delta g1 g2)]
+    (is (= "edlt-evt-NLD-support-nld.nhg-:parameter-change-announced-2026-01-01-to-evt-NLD-support-nld.nhg-:parameter-change-announced-2027-01-01"
+           (:event-delta/id d)) "deterministic id from the two event ids")
+    (is (true? (:event-delta/announcement-moved d))
+        "the announcement text moved — said as itself, at the verbatim level")
+    (is (str/includes? (:event-delta/prior-announcement d) "470.000")
+        "both announcement texts ride in full")
+    (is (str/includes? (:event-delta/next-announcement d) "450.000"))
+    (is (= [] (:event-delta/figures-added d)) "no figures were added")
+    (is (= "mortgage-observation/4" (:obs/method d)) "the delta carries the contract version")
+    (is (nil? (:event-delta/kind d)) "something moved — not :unchanged")
+    (is (= d (obs/event-delta g1 g2)) "equal inputs, equal delta — deterministic")
+    ;; the same announcement re-observed (new receipt, same text): :unchanged
+    (let [g3 (obs/event (assoc (nhg-event "2026-01-01")
+                               :event/refresh-of (:event/id g1)
+                               :event/receipts [(varied-receipt)]))
+          d2 (obs/event-delta g1 g3)]
+      (is (= :unchanged (:event-delta/kind d2))
+          "a re-read of the same announcement is the 'nothing moved' audit result")
+      (is (not= (:event-delta/prior-receipts d2) (:event-delta/next-receipts d2))
+          "receipt ids still differ — a new reading is a new receipt, and the delta says so"))
+    ;; cross-subject refusal
+    (let [jpn (obs/event
+               {:event/subject {:jurisdiction "JPN" :plane :support :subject-id "jpn.flat35"}
+                :event/kind :parameter-change-announced
+                :event/announcement-raw "fixture text"
+                :event/effective-at "2026-01-01"
+                :event/receipts [(obs/receipt
+                                  {:source-url "https://www.flat35.com/loan/lineup/flat35/conditions/index.html"
+                                   :source-class :official-programme-operator
+                                   :source-language "ja" :issuing-entity "住宅金融支援機構 (JHF)"
+                                   :jurisdiction "JPN"
+                                   :content-hash "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                                   :observed-at "2026-09-01T05:10:00Z" :asserted-at "2026-08-01"})]})]
+      (is (= :event/cross-subject (refusal-of #(obs/event-delta g1 jpn)))
+          "a delta between different subjects is refused — they never refreshed each other"))
+    (is (= :event/not-an-event (refusal-of #(obs/event-delta g1 {:event/id "evt-x"})))
+        "a raw map is not a frozen event")))
+
+(deftest event-chain-walks-lineage-and-refuses-broken-ones
+  (let [g1 (nhg-event "2026-01-01")
+        g2 (nhg-event "2027-01-01" :refresh-of (:event/id g1)
+                      :announcement-raw "De NHG-grens per 1 januari 2027 is € 450.000 (fixture)")
+        g3 (nhg-event "2028-01-01" :refresh-of (:event/id g2)
+                      :announcement-raw "De NHG-grens per 1 januari 2028 is € 460.000 (fixture)")
+        history (-> [] (obs/refresh-event g1) (obs/refresh-event g2) (obs/refresh-event g3))
+        {:keys [event/chain chain/deltas event/generations]}
+        (obs/readback-event-chain history {:jurisdiction "NLD" :plane :support
+                                           :subject-id "nld.nhg" :as-of "2028-06-30"})]
+    (is (= 3 generations) "all three announcements come back")
+    (is (= ["evt-NLD-support-nld.nhg-:parameter-change-announced-2026-01-01"
+            "evt-NLD-support-nld.nhg-:parameter-change-announced-2027-01-01"
+            "evt-NLD-support-nld.nhg-:parameter-change-announced-2028-01-01"]
+           (mapv :event/id chain)) "oldest effective-at first")
+    (is (= 3 (count deltas)))
+    (is (nil? (first deltas)) "the origin has no predecessor — its delta slot is nil")
+    (is (true? (:event-delta/announcement-moved (second deltas))))
+    (let [early (obs/readback-event-chain history {:jurisdiction "NLD" :plane :support
+                                                   :subject-id "nld.nhg" :as-of "2026-06-30"})]
+      (is (= 1 (:event/generations early)) "as-of before later announcements reads a one-generation chain")
+      (is (= [nil] (:chain/deltas early))))
+    ;; broken lineages — hand-assembled histories only
+    (is (= :event-chain/refresh-of-unknown
+           (refusal-of #(obs/readback-event-chain [g2] {:jurisdiction "NLD" :plane :support
+                                                        :subject-id "nld.nhg" :as-of "2027-06-30"})))
+        "truncated lineage is refused, never cut")
+    (let [c1 (nhg-event "2027-01-01" :refresh-of "evt-NLD-support-nld.nhg-:parameter-change-announced-2028-01-01"
+                        :announcement-raw "fixture")
+          c2 (nhg-event "2028-01-01" :refresh-of (:event/id c1) :announcement-raw "fixture")]
+      (is (= :event-chain/refresh-cycle
+             (refusal-of #(obs/readback-event-chain [c1 c2] {:jurisdiction "NLD" :plane :support
+                                                             :subject-id "nld.nhg" :as-of "2028-06-30"})))
+          "a cycle is refused"))))
+
+(deftest event-chain-refuses-a-cross-subject-lineage-at-readout
+  ;; refresh-event refuses a cross-subject link at append, so this history
+  ;; must be hand-assembled — defense in depth: a readout over an assembled
+  ;; or imported history re-checks what the append checked.
+  (let [foreign (obs/event
+                 {:event/subject {:jurisdiction "JPN" :plane :support :subject-id "jpn.flat35"}
+                  :event/kind :parameter-change-announced
+                  :event/announcement-raw "fixture text"
+                  :event/effective-at "2026-01-01"
+                  :event/receipts [(obs/receipt
+                                    {:source-url "https://www.flat35.com/loan/lineup/flat35/conditions/index.html"
+                                     :source-class :official-programme-operator
+                                     :source-language "ja" :issuing-entity "住宅金融支援機構 (JHF)"
+                                     :jurisdiction "JPN"
+                                     :content-hash "sha256:1111111111111111111111111111111111111111111111111111111111111111"
+                                     :observed-at "2026-09-01T05:10:00Z" :asserted-at "2026-08-01"})]})
+        g2 (nhg-event "2027-01-01" :refresh-of (:event/id foreign) :announcement-raw "fixture")]
+    (is (= :event-chain/chain-cross-subject
+           (refusal-of #(obs/readback-event-chain [foreign g2]
+                            {:jurisdiction "NLD" :plane :support
+                             :subject-id "nld.nhg" :as-of "2027-06-30"})))
+        "the queried subject's latest event links to a lineage element about
+         another subject — refused at readout, never returned")))
+
+(deftest event-proposal-is-data-with-announcement-not-prediction-qualifiers
+  (let [ev (nhg-event "2027-01-01"
+                      :announcement-raw "De NHG-grens per 1 januari 2027 is € 450.000 (fixture)"
+                      :figures [{:figure/field "announced-limit-2027"
+                                 :figure/raw "€ 450.000"
+                                 :figure/monetary? true
+                                 :figure/currency "EUR"
+                                 :figure/nominal-at "2027-01-01"}])
+        claims (obs/hyakka-event-proposal ev)]
+    (is (= 2 (count claims)) "one announcement-level claim + one per published figure")
+    (is (every? #(= "fudosan" (:claim/corpus %)) claims))
+    (is (every? #(= "world/mortgage-event/mortgage-support/nld.nhg" (:claim/entity %)) claims)
+        "event claims mint event-realm entities — never observation entities")
+    (is (every? #(str/starts-with? (:claim/entity %) "world/mortgage-event/") claims))
+    (let [head (first claims)]
+      (is (= "prop/mortgage-support-programme-event" (:claim/prop head)))
+      (is (= "parameter-change-announced" (:claim/event-kind head)))
+      (is (= "2027-01-01" (:claim/effective-at head)))
+      (is (str/includes? (:claim/effective-at-note head) "never computed")
+          "the effective-date boundary rides on the claim itself")
+      (is (str/includes? (:claim/value head) "450.000") "the VERBATIM announcement is the value"))
+    (let [fig (first (filter #(contains? % :claim/currency) claims))]
+      (is (= "EUR" (:claim/currency fig)))
+      (is (= "2027-01-01" (:claim/nominal-at fig))))
+    (is (every? (comp true? :announcement-not-prediction :claim/qualifiers) claims)
+        "every claim carries announcement-not-prediction — an observed announcement
+         is an observation of a publication, never a claim about what will happen")
+    (is (every? (comp true? :no-model :claim/qualifiers) claims))
+    (is (every? (comp true? :proposal/ontology-registration-pending :claim/qualifiers) claims)
+        "the event props are contract-local and NOT registered in the Hyakka ontology")
+    (is (every? (comp true? :proposal/source-class-unmapped :claim/qualifiers) claims)
+        "the fixture's programme-operator class is a scope-unmapped class — surfaced"))
+  (is (= :proposal-event/not-an-event
+         (refusal-of #(obs/hyakka-event-proposal {:event/id "evt-x"})))
+      "a raw map is not a frozen event"))

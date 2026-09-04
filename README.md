@@ -81,14 +81,15 @@ assertions):
 `(facts/unverified-claims)` returns all of rule 2's gaps as data, so the
 to-do list is queryable rather than buried in prose.
 
-## The observation contract (`mortgage-observation/3`)
+## The observation contract (`mortgage-observation/4`)
 
 `src/mortgage/observation.cljc` is the contract that turns a reading of this
 catalog into a **provenance-preserving, re-observable claim** — and that makes
 it structurally hard for an observation run to look more certain than it is.
 v2 added the auditable-refresh machinery (item 10); v3 adds figure-level
-provenance attribution (item 11). A /1- or /2-stamped artifact and a
-/3-stamped artifact stay comparable on purpose:
+provenance attribution (item 11); v4 adds typed event inputs (item 12). A
+/1-, /2- or /3-stamped artifact and a /4-stamped artifact stay comparable on
+purpose:
 
 1. **Source receipt** (`receipt`) — one frozen record per source reading:
    https URL, closed-vocabulary source class, language, issuing entity,
@@ -160,6 +161,29 @@ provenance attribution (item 11). A /1- or /2-stamped artifact and a
     REFUSED, never guessed. An id no carried receipt answers to is refused.
     A frozen /1 or /2 artifact predates attribution and still reads back;
     its figure claims fall back to the sole receipt.
+12. **Typed event inputs (v4)** (`event`, `refresh-event`, `readback-events`,
+    `readback-event-chain`, `event-delta`, `hyakka-event-proposal`) — the
+    PUBLISHED-change announcement as a typed input of its own. The /1–/3
+    contract saw a refresh only as a figure diff; the CAUSE — the source
+    announcing a new limit, a scheme ending, a successor being announced,
+    published eligibility signals moving — was nowhere. An event carries a
+    closed `:event/kind` vocabulary (`parameter-change-announced`,
+    `programme-terminated`, `programme-suspended`, `successor-scheme-announced`,
+    `eligibility-signal-change`, `operator-or-administrator-change`,
+    `application-window-change`, `name-or-brand-change`), the SAME subject
+    authority as the observation contract (no phantom announcements), the
+    SAME receipt discipline (https + hash + jurisdiction-matched), the same
+    verbatim-plus-basis rule for any figure the announcement publishes, and
+    `:event/effective-at` — the date the SOURCE states the change takes
+    effect, carried as a typed ISO date and never computed: an announcement
+    read today may take effect next year; that is an observation of a
+    publication, NOT a claim about the future. Events date their readback by
+    effective-at (not by when we read them), refresh along their own lineage
+    (`:event/refresh-of` — an event can never refresh an observation and
+    vice versa), compare verbatim in `event-delta` (`:unchanged` when only
+    the receipts moved), and propose to the `fudosan` corpus as
+    `world/mortgage-event/*` entities with `:announcement-not-prediction
+    true` on every claim. All of it is DATA — nothing is sent anywhere.
 
 Every rule refuses loudly (`ex-info` with a `:refusal/code` from the
 documented `refusals` set) instead of degrading quietly.
@@ -182,7 +206,7 @@ login/paywall/captcha) with its sha256 — a re-fetch hash that differs is an
 observation, not a fixture failure.
 
 ```bash
-nbb --classpath src:test run-tests.cljs   # 59 tests / 379 assertions, 0 failures
+nbb --classpath src:test run-tests.cljs   # 68 tests / 444 assertions, 0 failures
 ```
 
 ## Worldwide coverage plan
