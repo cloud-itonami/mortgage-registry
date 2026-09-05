@@ -80,10 +80,36 @@
       re-attribution is visible as itself and never folded into a content
       change.
 
+  14. TYPED EVENT INPUTS (v4) — `event`: a PUBLISHED-change announcement
+      observed at a carried source, as a typed input of its own. The /1–/3
+      contract saw a refresh only as a figure diff; the CAUSE — the source
+      announcing a new limit, a scheme ending, a successor being announced,
+      published eligibility signals moving — was nowhere. `event` records it:
+      a closed `:event/kind` vocabulary, the SAME subject authority as the
+      observation contract (the event's subject must EXIST in the catalog —
+      no phantom announcements), the SAME receipt discipline (https, hash,
+      jurisdiction-matched; a cross-jurisdiction receipt is refused), the
+      same verbatim-plus-basis rule for any figure the announcement carries,
+      and `:event/effective-at` — the date the SOURCE states the change takes
+      effect, carried as a typed date and never computed, never a prediction
+      (an announcement read today may take effect next year; that is an
+      observation of a publication, not a claim about the future).
+      `refresh-event` appends events to the same append-only history under
+      per-kind lineage (`:event/refresh-of` — an event cannot refresh an
+      observation); `readback-events` returns the latest event at or before
+      an as-of with receipts revalidated; `readback-event-chain` walks the
+      event lineage refusing truncated, cycling and cross-subject chains;
+      `event-delta` compares two frozen events of the same subject at the
+      verbatim level (announcement text, effective date, kind, figures,
+      flags — nothing numeric, nothing normalized); `hyakka-event-proposal`
+      is the claim shape for the `fudosan` corpus (DATA, nothing sent).
+
   WHAT THIS CONTRACT NEVER PRODUCES: a valuation, a market score, a ranking
   of jurisdictions / programmes / organizations, an eligibility conclusion
-  about any person (the catalog discloses signals, it never adjudicates), or
-  any statement about a borrower. Mortgage figures are programme parameters
+  about any person (the catalog discloses signals, it never adjudicates), a
+  forecast or prediction of future programme parameters (an observed
+  announcement is an observation of a publication, never a claim about what
+  will happen), or any statement about a borrower. Mortgage figures are programme parameters
   as published — observations, not advice and not offers."
 
   (:require [clojure.string :as str]
@@ -94,11 +120,12 @@
 
 (def contract-version
   "Every receipt, observation, coverage row, delta and claim carries this
-  string. v3 adds figure-level provenance attribution (part 13) and changes
-  no shape the /1 and /2 contracts froze: a /1- or /2-stamped artifact and a
-  /3-stamped artifact are comparable by `refresh-delta` on purpose (mixed
-  versions across a chain are expected during the bump, never refused)."
-  "mortgage-observation/3")
+  string. v3 adds figure-level provenance attribution (part 13); v4 adds
+  typed event inputs (part 14). Neither changes a shape the /1 and /2
+  contracts froze: a /1-, /2- or /3-stamped artifact and a /4-stamped
+  artifact are comparable by `refresh-delta` on purpose (mixed versions
+  across a chain are expected during the bump, never refused)."
+  "mortgage-observation/4")
 
 ;; --- refusals (loud, never silent degradation) ------------------------------
 
@@ -155,7 +182,27 @@
     :delta/cross-subject
     :figure/ambiguous-receipt-attribution
     :figure/unattributable-receipt
-    :proposal/not-an-observation})
+    :proposal/not-an-observation
+    :event/missing-field
+    :event/unknown-kind
+    :event/unknown-subject
+    :event/bad-effective-at
+    :event/no-receipts
+    :event/cross-jurisdiction-receipt
+    :event/empty-announcement
+    :event/unknown-missingness-flag
+    :event/not-an-event
+    :event/duplicate-event-id
+    :event/refresh-of-unknown
+    :event/refresh-of-self
+    :event/refresh-of-cross-subject
+    :event/refresh-of-observation
+    :event/cross-subject
+    :event/bad-as-of
+    :event-chain/refresh-of-unknown
+    :event-chain/refresh-cycle
+    :event-chain/chain-cross-subject
+    :proposal-event/not-an-event})
 
 ;; --- vocabulary --------------------------------------------------------------
 
@@ -196,6 +243,22 @@
     :successor-scheme-parameters-unknown
     :statutory-cite-unverified
     :not-seeded})
+
+(def event-kinds
+  "The closed vocabulary of PUBLISHED-change kinds an event input may carry —
+  chosen from what a programme operator, regulator or registry actually
+  announces about the subjects this catalog seeds. Extending it is a contract
+  change, not a free-form field. Every kind is an observation of a
+  PUBLICATION; none of them is ever a claim that the change is desirable,
+  likely, or will in fact take effect."
+  #{:parameter-change-announced      ; a published parameter (limit, rate, fee) the source states will change
+    :programme-terminated            ; the source states the programme ends / stops accepting applications
+    :programme-suspended             ; the source states applications are paused, without ending the programme
+    :successor-scheme-announced      ; a follow-on programme is announced (parameters may be unknown)
+    :eligibility-signal-change       ; published eligibility signals moved (disclosed conditions, never a person's status)
+    :operator-or-administrator-change ; who operates/administers the programme, as published
+    :application-window-change       ; published application window opens/closes/extends
+    :name-or-brand-change})          ; the programme is renamed / rebranded, as published
 
 (def planes
   "The catalog planes an observation can be about (same three as the catalog
@@ -898,3 +961,454 @@
                  :claim/prop (get claim-props (:plane subject))
                  :claim/value (str "observed via " contract-version " — see receipt")})]]
     (into subject-claim (vec figure-claims))))
+
+;; --- typed event inputs (v4, part 14): published-change announcements ---------
+;;
+;; The /1–/3 contract saw a refresh only as a figure diff. The CAUSE — the
+;; source ANNOUNCING that a limit moves, a scheme ends, a successor appears —
+;; was nowhere. An event is a typed input for exactly that: one published
+;; announcement, observed at a carried receipt, about a subject that exists.
+;; It is an observation of a PUBLICATION — never a prediction, never advice,
+;; never a claim that the announced change is desirable, likely or certain.
+
+(def ^:private event-realm
+  "The claim-entity realm event proposals mint. Observations (part 9) mint
+  `world/mortgage-*`; events are a different plane of the same subject, so
+  they mint `world/mortgage-event/*` — never observation entities (an event
+  must not be readable as an observation of record, it is an announcement
+  OF record)."
+  "world/mortgage-event/")
+
+(defn event
+  "Validate one typed event input and freeze it with a deterministic
+  `:event/id`. Refuses: missing fields, an `:event/kind` outside the closed
+  vocabulary, a subject that does not exist in the catalog (the SAME entity
+  authority as `observation` — no phantom announcements), a malformed or
+  absent `:event/effective-at`, zero receipts, receipts from another
+  jurisdiction (entity separation), an empty announcement (an event without
+  the source's own words is a rumor, the same posture as a figure without
+  verbatim text), and missingness flags outside the closed vocabulary.
+
+  `:event/effective-at` is the date the SOURCE states the change takes
+  effect — carried as a typed ISO date, never computed, never inferred. An
+  announcement read today may take effect next year; that is an observation
+  of a publication, not a claim about the future. The announcement's
+  verbatim text rides on `:event/announcement-raw`; any figure the
+  announcement itself publishes rides through the SAME validate-figure
+  basis discipline as an observation's figures."
+  [{:event/keys [subject kind announcement-raw effective-at receipts figures
+                 missingness]
+    :or {figures [] missingness {:flags [] :not-verified []}}
+    :as ev}]
+  (assert-present ev "event" [:event/subject :event/kind
+                              :event/effective-at :event/receipts])
+  ;; the source's own words: ABSENT is a missing field, present-but-blank is
+  ;; an empty announcement (a rumor dressed as whitespace) — two refusals,
+  ;; never one lenient collapse.
+  (when (nil? announcement-raw)
+    (refuse :event/missing-field "event is missing required field :event/announcement-raw"))
+  (when (str/blank? (str announcement-raw))
+    (refuse :event/empty-announcement
+            "an event carries the source's own words — an empty announcement is a rumor"))
+  (when-not (contains? event-kinds kind)
+    (refuse :event/unknown-kind (str "unknown event kind: " kind)))
+  (let [{:keys [jurisdiction plane subject-id]} subject]
+    (when-not (subject-exists? subject)
+      (refuse :event/unknown-subject
+              (str "no " plane " subject \"" subject-id "\" in " jurisdiction
+                   " — the catalog is the entity authority, no phantom announcements")))
+    (when-not (iso-date? effective-at)
+      (refuse :event/bad-effective-at
+              (str "effective-at must be an ISO date, as stated by the source: " effective-at)))
+    (when-not (seq receipts)
+      (refuse :event/no-receipts "an event without a receipt is a rumor"))
+    (when (str/blank? (str announcement-raw))
+      (refuse :event/empty-announcement
+              "an event carries the source's own words — an empty announcement is a rumor"))
+    (doseq [r receipts]
+      (receipt r)
+      (when-not (= (str (:jurisdiction r)) (str jurisdiction))
+        (refuse :event/cross-jurisdiction-receipt
+                (str "receipt jurisdiction " (:jurisdiction r)
+                     " cannot evidence an event about " jurisdiction))))
+    (let [validated-figures (mapv validate-figure figures)
+          receipt-id-set (into #{} (map #(str (:receipt/id %))) receipts)
+          {:keys [flags not-verified]} missingness
+          unknown (remove #(contains? missingness-flags %) flags)]
+      ;; the same attribution discipline as `observation`: an explicit
+      ;; :figure/receipt-id must name a carried receipt; a figure naming
+      ;; none under several receipts is ambiguous — never guessed.
+      (doseq [vf validated-figures]
+        (if-some [claimed (:figure/receipt-id vf)]
+          (when-not (contains? receipt-id-set (str claimed))
+            (refuse :figure/unattributable-receipt
+                    (str "figure \"" (:figure/field vf) "\" cites receipt " claimed
+                         ", which this event does not carry")))
+          (when (> (count receipt-id-set) 1)
+            (refuse :figure/ambiguous-receipt-attribution
+                    (str "figure \"" (:figure/field vf) "\" carries no :figure/receipt-id "
+                         "but the event has " (count receipt-id-set)
+                         " receipts — name the receipt that evidenced it")))))
+      (when (seq unknown)
+        (refuse :event/unknown-missingness-flag
+                (str "missingness flags outside the closed vocabulary: " (pr-str (vec unknown)))))
+      (let [sole-receipt-id (when (= 1 (count receipt-id-set))
+                              (str (:receipt/id (first receipts))))
+            attributed-figures
+            (mapv (fn [vf]
+                    (cond-> vf
+                      (nil? (:figure/receipt-id vf))
+                      (assoc :figure/receipt-id sole-receipt-id)))
+                  validated-figures)]
+        (assoc ev
+               :event/method contract-version
+               :event/id (str "evt-" jurisdiction "-" (name plane) "-" subject-id
+                              "-" kind "-" effective-at)
+               :event/figures attributed-figures
+               :event/missingness {:flags (vec flags)
+                                   :not-verified (vec not-verified)})))))
+
+(defn event-valid?
+  "True when `event` accepts `ev` without refusing."
+  [ev]
+  (try (event ev) true (catch :default _ false)))
+
+(defn- event-frozen?
+  "The frozen-identity check for event artifacts."
+  [ev]
+  (and (contains? ev :event/id) (contains? ev :event/method)))
+
+(defn refresh-event
+  "Append `ev` to `history` (a vector of observations AND events — one
+  history, two artifact kinds) and return the new history. Pure. Refuses a
+  duplicate `:event/id`, an `:event/refresh-of` pointing at an id not in the
+  history, a self-link, a link whose parent is about a DIFFERENT subject,
+  and — the kind boundary — a link to an OBSERVATION id: events refresh
+  events, observations refresh observations; one artifact must never be
+  readable as the other's predecessor."
+  [history ev]
+  (when-not (event-frozen? ev)
+    (refuse :event/not-an-event
+            "refresh-event takes a frozen event from `event`, not a raw map"))
+  (let [id (:event/id ev)]
+    (when (some #(or (= (:event/id %) id) (= (:obs/id %) id)) history)
+      (refuse :event/duplicate-event-id
+              (str "event " id " is already recorded — a re-observation of the same
+                   announcement gets a new receipt, a new announcement gets a new id")))
+    (when-let [ro (:event/refresh-of ev)]
+      (when (= ro id)
+        (refuse :event/refresh-of-self "an event cannot refresh itself"))
+      (if-let [parent (some #(when (or (= (:event/id %) ro) (= (:obs/id %) ro)) %) history)]
+        (cond
+          (contains? parent :event/method)
+          (when-not (= (subject-key (:event/subject parent))
+                       (subject-key (:event/subject ev)))
+            (refuse :event/refresh-of-cross-subject
+                    (str "event " id " claims to refresh " ro
+                         ", which is about another subject — lineage is per subject")))
+          (contains? parent :obs/method)
+          (refuse :event/refresh-of-observation
+                  (str ro " is an OBSERVATION id — events refresh events, "
+                       "observations refresh observations; one artifact kind "
+                       "is never the other's predecessor"))
+          :else nil)
+        (refuse :event/refresh-of-unknown
+                (str ":event/refresh-of " ro " is not in the history"))))
+    (conj history ev)))
+
+(defn- event-history-events
+  "The frozen event artifacts of a history (observations may share it)."
+  [history]
+  (filter #(contains? % :event/method) history))
+
+(def ^:private event-basis-keys
+  "The keys over which two events of the same subject are considered to have
+  changed: the verbatim announcement, the kind as published, the
+  source-stated effective date, and any carried figures on their basis.
+  The receipt ids are NOT in this set — a re-read of the same publication
+  is a new receipt by design, and that difference is reported separately."
+  [:event/announcement-raw :event/kind :event/effective-at
+   :figure/raw :figure/monetary? :figure/currency :figure/nominal-at
+   :figure/area-value :figure/area-unit])
+
+(defn- event-figure-index
+  "Map of :figure/field -> figure, last-one-wins, over an event's figures."
+  [figures]
+  (into {} (map (fn [f] [(:figure/field f) f])) figures))
+
+(defn event-delta
+  "The auditable comparison of two frozen events of the SAME subject — what
+  changed between the previously recorded announcement and the newly
+  recorded one, at the VERBATIM level: the announcement text, the kind as
+  published, the source-stated effective date, and any carried figures with
+  both bases. Nothing numeric is computed, nothing is normalized, no
+  likelihood or timing beyond the source's own words is asserted.
+  Refuses anything that is not a frozen event and any cross-subject
+  comparison (entity separation). Reports `:event-delta/kind :unchanged`
+  when nothing but the receipts moved — the 'same announcement re-observed'
+  case an auditor looks for."
+  [prior next]
+  (doseq [[label ev] [["prior" prior] ["next" next]]]
+    (when-not (event-frozen? ev)
+      (refuse :event/not-an-event
+              (str label " must be a frozen event from `event`, not a raw map"))))
+  (when-not (= (subject-key (:event/subject prior))
+               (subject-key (:event/subject next)))
+    (refuse :event/cross-subject
+            (str "event-delta compares one subject with itself: "
+                 (pr-str (subject-key (:event/subject prior)))
+                 " vs " (pr-str (subject-key (:event/subject next))))))
+  (let [p-figs (event-figure-index (:event/figures prior))
+        n-figs (event-figure-index (:event/figures next))
+        p-fields (set (keys p-figs))
+        n-fields (set (keys n-figs))
+        added (vec (sort (remove p-fields n-fields)))
+        removed (vec (sort (remove n-fields p-fields)))
+        shared (sort (filter n-fields p-fields))
+        changed (vec (sort-by :delta/field
+                              (for [f shared
+                                    :when (not= (select-keys (get p-figs f) event-basis-keys)
+                                                (select-keys (get n-figs f) event-basis-keys))]
+                                {:delta/field f
+                                 :delta/prior-figure (get p-figs f)
+                                 :delta/next-figure (get n-figs f)})))
+        unchanged (count (for [f shared
+                               :when (= (select-keys (get p-figs f) event-basis-keys)
+                                        (select-keys (get n-figs f) event-basis-keys))]
+                           f))
+        event-moved? (not= (select-keys prior [:event/announcement-raw
+                                               :event/kind :event/effective-at])
+                           (select-keys next [:event/announcement-raw
+                                              :event/kind :event/effective-at]))
+        p-flags (vec (sort (:flags (:event/missingness prior))))
+        n-flags (vec (sort (:flags (:event/missingness next))))
+        flags-added (vec (remove (set p-flags) n-flags))
+        flags-removed (vec (remove (set n-flags) p-flags))]
+    (cond-> {:event-delta/id (str "edlt-" (:event/id prior) "-to-" (:event/id next))
+             :obs/method contract-version
+             :event-delta/prior-id (:event/id prior)
+             :event-delta/next-id (:event/id next)
+             :event-delta/prior-effective-at (:event/effective-at prior)
+             :event-delta/next-effective-at (:event/effective-at next)
+             :event-delta/prior-receipts (mapv :receipt/id (:event/receipts prior))
+             :event-delta/next-receipts (mapv :receipt/id (:event/receipts next))
+             :event-delta/prior-announcement (:event/announcement-raw prior)
+             :event-delta/next-announcement (:event/announcement-raw next)
+             :event-delta/prior-kind (:event/kind prior)
+             :event-delta/next-kind (:event/kind next)
+             :event-delta/figures-added added
+             :event-delta/figures-removed removed
+             :event-delta/figures-changed changed
+             :event-delta/figures-unchanged unchanged
+             :event-delta/flags-added flags-added
+             :event-delta/flags-removed flags-removed
+             :event-delta/non-goals ["verbatim-level audit of what moved between two recorded announcements"
+                                     "an announcement is an observation of a publication — not a prediction, not advice"
+                                     "no numeric difference, no normalization, no likelihood claim"]}
+      event-moved?
+      (assoc :event-delta/announcement-moved true)
+      (and (not event-moved?) (empty? added) (empty? removed) (empty? changed)
+           (empty? flags-added) (empty? flags-removed))
+      (assoc :event-delta/kind :unchanged))))
+
+(defn readback-events
+  "Query shape: the LATEST event for a subject whose `:event/effective-at` is
+  at or before `as-of` — announcements are dateable by when they TAKE EFFECT
+  as the source states it, not by when we read them. Every receipt is
+  re-validated on the way out. A subject with no such event returns a
+  `:event/miss` report — never a default, never a neighbouring subject's
+  announcement."
+  [history {:keys [jurisdiction plane subject-id as-of kind]}]
+  (when-not (iso-date? as-of)
+    (refuse :event/bad-as-of (str "as-of must be an ISO date: " as-of)))
+  (let [hits (->> (event-history-events history)
+                  (filter #(let [s (:event/subject %)]
+                             (and (= (str (:jurisdiction s)) (str jurisdiction))
+                                  (= (name (:plane s)) (name plane))
+                                  (= (str (:subject-id s)) (str subject-id))
+                                  (or (nil? kind) (= kind (:event/kind %)))
+                                  (not (pos? (compare (:event/effective-at %) as-of))))))
+                  (sort-by #(str (:event/effective-at %)))
+                  vec)
+        latest (peek hits)]
+    (if latest
+      (do (doseq [r (:event/receipts latest)]
+            (when-not (receipt-valid? r)
+              (refuse :readback/tampered-receipt
+                      (str "receipt for " (:receipt/id r)
+                           " no longer validates — refusing event readback"))))
+          (doseq [f (:event/figures latest)]
+            (validate-figure f))
+          latest)
+      {:event/miss true
+       :event/subject {:jurisdiction jurisdiction :plane plane :subject-id subject-id}
+       :event/as-of as-of
+       :event/note "no event with effective-at at or before this date — missing is unmeasured"})))
+
+(defn readback-event-chain
+  "The event-lineage query: every generation of a subject's events with
+  `:event/effective-at` at or before `as-of`, oldest effective-at first,
+  each revalidated on the way out, with the pairwise `event-delta`s aligned
+  to the chain (`:chain/deltas` i is the delta from generation i-1 to i; nil
+  for the origin). Refuses loudly on a lineage that append-only
+  `refresh-event` cannot produce but a hand-assembled history can: an
+  `:event/refresh-of` pointing at an id absent from the history, a cycle,
+  and a chain element whose subject differs from the queried subject."
+  [history {:keys [jurisdiction plane subject-id as-of]}]
+  (when-not (iso-date? as-of)
+    (refuse :event/bad-as-of (str "as-of must be an ISO date: " as-of)))
+  (let [by-id (into {}
+                    (mapcat (fn [ev]
+                              (when-some [id (:event/id ev)]
+                                [[id ev]])))
+                    (event-history-events history))
+        links (into {} (keep (fn [ev]
+                               (when-let [ro (:event/refresh-of ev)]
+                                 [(:event/id ev) ro]))
+                             (event-history-events history)))
+        hits (->> (event-history-events history)
+                  (filter #(let [s (:event/subject %)]
+                             (and (= (str (:jurisdiction s)) (str jurisdiction))
+                                  (= (name (:plane s)) (name plane))
+                                  (= (str (:subject-id s)) (str subject-id))
+                                  (not (pos? (compare (:event/effective-at %) as-of))))))
+                  (sort-by #(str (:event/effective-at %)))
+                  vec)
+        latest (peek hits)]
+    (if-not latest
+      {:event/miss true
+       :event/subject {:jurisdiction jurisdiction :plane plane :subject-id subject-id}
+       :event/as-of as-of
+       :event/note "no event with effective-at at or before this date — missing is unmeasured"}
+      (loop [cur latest
+             chain-rev [latest]
+             seen #{(:event/id latest)}]
+        (let [parent-id (get links (:event/id cur))]
+          (cond
+            (nil? parent-id)
+            (let [chain (vec (rseq (vec chain-rev)))]
+              (doseq [ev chain]
+                (doseq [r (:event/receipts ev)]
+                  (when-not (receipt-valid? r)
+                    (refuse :readback/tampered-receipt
+                            (str "receipt for " (:receipt/id r)
+                                 " no longer validates — refusing event chain"))))
+                (when-not (= (subject-key (:event/subject ev))
+                             (subject-key (:event/subject latest)))
+                  (refuse :event-chain/chain-cross-subject
+                          (str "chain event " (:event/id ev)
+                               " is about another subject — lineage is per subject"))))
+              {:event/subject {:jurisdiction jurisdiction
+                               :plane plane
+                               :subject-id subject-id}
+               :event/as-of as-of
+               :event/chain chain
+               :chain/deltas (into [nil]
+                                   (map (fn [[p n]] (event-delta p n)))
+                                   (partition 2 1 chain))
+               :event/generations (count chain)})
+            (contains? seen parent-id)
+            (refuse :event-chain/refresh-cycle
+                    (str ":event/refresh-of cycle at " (:event/id cur) " -> " parent-id))
+            (not (contains? by-id parent-id))
+            (refuse :event-chain/refresh-of-unknown
+                    (str ":event/refresh-of " parent-id " is not in the history — "
+                         "truncated lineage is refused, never silently cut"))
+            :else
+            (recur (get by-id parent-id)
+                   (conj chain-rev (get by-id parent-id))
+                   (conj seen parent-id))))))))
+
+(defn- event-claim-entity
+  [{:keys [jurisdiction plane subject-id]}]
+  (str event-realm
+       (case plane
+         :procedure (str "mortgage-procedure/" jurisdiction)
+         :support (str "mortgage-support/" subject-id)
+         :organizations (str "mortgage-organization/" subject-id)
+         (str "mortgage-unknown/" jurisdiction))))
+
+(defn hyakka-event-proposal
+  "The exact claim shape a proposing run would carry to the `fudosan` corpus
+  for one frozen EVENT: one announcement-level claim plus one claim per
+  figure the announcement publishes. Each claim carries the receipt, the
+  verbatim announcement, the source-stated `:event/effective-at`, the kind
+  as published, the missingness flags, and the no-model / deterministic /
+  announcement-not-prediction qualifiers. Props are contract-local and NOT
+  registered in the Hyakka ontology (`:proposal/ontology-registration-pending
+  true` on every claim). The proposal is DATA — this contract performs no
+  transmission, no outreach and no publishing. Refuses anything that is not
+  a frozen event."
+  [ev]
+  (when-not (event-frozen? ev)
+    (refuse :proposal-event/not-an-event
+            "hyakka-event-proposal takes a frozen event from `event`, not a raw map"))
+  (let [subject (:event/subject ev)
+        receipts (:event/receipts ev)
+        {:keys [flags]} (:event/missingness ev)
+        basis (some-> receipts peek
+                      (select-keys [:source-url :content-hash :observed-at :asserted-at
+                                    :source-class :method]))
+        unmapped (contains? unmapped-in-scope (:source-class basis))
+        common {:claim/corpus "fudosan"
+                :claim/as-of (:event/effective-at ev)
+                :claim/entity (event-claim-entity subject)
+                :claim/receipt basis
+                :claim/receipts (mapv #(select-keys % [:source-url :content-hash :observed-at
+                                                       :asserted-at :source-class :method])
+                                      receipts)
+                :claim/qualifiers
+                (cond-> {:deterministic-extractor contract-version
+                         :no-model true
+                         :announcement-not-prediction true
+                         :non-goals ["an observed announcement — an observation of a publication"
+                                     "not advice, valuation, score, ranking or forecast"
+                                     "effective-at is the source's own stated date, never computed"
+                                     "no person is adjudicated and no eligibility is concluded"]}
+                  (seq flags) (assoc :missing/flags (vec flags))
+                  (seq (:not-verified (:event/missingness ev)))
+                  (assoc :missing/not-verified (vec (:not-verified (:event/missingness ev))))
+                  unmapped (assoc :proposal/source-class-unmapped true)
+                  :always (assoc :proposal/ontology-registration-pending true))}
+        figure-claims
+        (for [f (:event/figures ev)]
+          (let [fr (some #(when (= (str (:receipt/id %)) (str (:figure/receipt-id f))) %)
+                         receipts)
+                sole (when (= 1 (count receipts)) (first receipts))
+                fig-src (or fr sole)]
+            (merge common
+                   {:claim/id (str "fudosan/mortgage-registry/"
+                                   (:jurisdiction subject) "/event/"
+                                   (name (:plane subject)) "/"
+                                   (:subject-id subject) "/"
+                                   (name (:event/kind ev)) "/"
+                                   (:figure/field f) "/"
+                                   (:event/effective-at ev))
+                    :claim/prop "prop/mortgage-support-programme-event-figure"
+                    :claim/value (:figure/raw f)}
+                   {:claim/receipt (when fig-src
+                                     (select-keys fig-src
+                                                  [:source-url :content-hash :observed-at
+                                                   :asserted-at :source-class :method]))}
+                   (when (:figure/monetary? f)
+                     {:claim/currency (:figure/currency f)
+                      :claim/nominal-at (:figure/nominal-at f)
+                      :claim/basis-note "nominal at own date — not comparable across dates or currencies without a stated basis"})
+                   (when (seq (str (:figure/area-value f)))
+                     {:claim/area-value (:figure/area-value f)
+                      :claim/area-unit (:figure/area-unit f)
+                      :claim/area-basis-note "area under its own measurement standard — not interchangeable"}))))]
+    (into
+     [(merge common
+             {:claim/id (str "fudosan/mortgage-registry/"
+                             (:jurisdiction subject) "/event/"
+                             (name (:plane subject)) "/"
+                             (:subject-id subject) "/"
+                             (name (:event/kind ev)) "/"
+                             (:event/effective-at ev))
+              :claim/prop "prop/mortgage-support-programme-event"
+              :claim/value (:event/announcement-raw ev)
+              :claim/event-kind (name (:event/kind ev))
+              :claim/effective-at (:event/effective-at ev)
+              :claim/effective-at-note "the date the SOURCE states the change takes effect — carried, never computed"})]
+     (vec figure-claims))))
