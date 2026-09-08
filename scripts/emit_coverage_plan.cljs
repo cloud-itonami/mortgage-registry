@@ -17,7 +17,7 @@
 ;; emitting a smaller world.
 
 (ns emit-coverage-plan
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.edn :as edn]
             [mortgage.facts :as facts]
             [mortgage.plan :as plan]
@@ -38,7 +38,7 @@
   (when (fs/existsSync family-dir)
     (->> (js->clj (fs/readdirSync family-dir))
          (keep #(second (re-matches #"cloud-itonami-iso3166-(.+)" %)))
-         (map str/upper-case)
+         (map str/upper)
          sort
          vec)))
 
