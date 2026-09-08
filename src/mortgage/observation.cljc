@@ -112,7 +112,7 @@
   will happen), or any statement about a borrower. Mortgage figures are programme parameters
   as published — observations, not advice and not offers."
 
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [mortgage.facts :as facts]
             [mortgage.plan :as plan]))
 

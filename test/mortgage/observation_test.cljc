@@ -5,7 +5,7 @@
   entity separation, currency/unit basis, provenance, missingness, and
   query/readback. These tests do NOT assert that any programme figure is
   correct — no test can; only a fresh fetch against the official source can."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [clojure.edn :as edn]
             ["fs" :as fs]
             [mortgage.facts :as facts]

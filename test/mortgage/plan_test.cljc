@@ -3,7 +3,7 @@
   being overstated, so these tests mostly check that it cannot flatter itself:
   status is computed from evidence, waves justify their own ordering, and the
   shortcuts state what they do NOT buy."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [mortgage.plan :as plan]
             #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing]])))

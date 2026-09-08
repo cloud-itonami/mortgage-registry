@@ -28,7 +28,7 @@
   live on one plane (ADR-260726-kotobase-query-plane-is-one-ref) applies
   directly: sharding this catalog by country would make exactly the questions
   it exists to answer unanswerable."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [mortgage.facts :as facts]))
 
 ;; --- measuring where a jurisdiction actually is ---------------------------

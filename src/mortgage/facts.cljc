@@ -26,7 +26,7 @@
   affordability or entitlement outcome. Whoever operates a live instance
   (a licensed lender, a broker, a housing counsellor) applies the programme's
   own current rules and bears that jurisdiction's liability."
-  (:require [clojure.string :as str]))
+  (:require [kotoba.lang.text :as str]))
 
 (def catalog
   "iso3 -> {:procedure, :support, :organizations, :verification}.

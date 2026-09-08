@@ -5,7 +5,7 @@
   than it is: nothing is asserted without a provenance URL and a retrieval
   date, every jurisdiction publishes its own not-verified list, and an
   unseeded jurisdiction resolves to nil rather than to a permissive default."
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [mortgage.facts :as facts]
             #?(:clj [clojure.test :refer [deftest is testing]]
                :cljs [cljs.test :refer [deftest is testing]])))
