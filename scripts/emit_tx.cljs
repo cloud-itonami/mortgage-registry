@@ -8,7 +8,7 @@
 ;; nbb (not bb): script host policy is nbb-only, ADR-2607173000.
 
 (ns emit-tx
-  (:require [clojure.string :as str]
+  (:require [kotoba.lang.text :as str]
             [mortgage.facts :as facts]
             ["fs" :as fs]))
 
