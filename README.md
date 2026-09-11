@@ -206,7 +206,7 @@ login/paywall/captcha) with its sha256 — a re-fetch hash that differs is an
 observation, not a fixture failure.
 
 ```bash
-nbb --classpath src:test run-tests.cljs   # 68 tests / 444 assertions, 0 failures
+kbb --backend sci --classpath src:test run-tests.cljs   # 68 tests / 444 assertions, 0 failures
 ```
 
 ## Worldwide coverage plan
@@ -270,7 +270,7 @@ keys, and whether a scheduled fleet routine may consume `next-batch`. Each
 records what deferring it blocks.
 
 ```bash
-nbb --classpath src scripts/emit_coverage_plan.cljs   # refresh the queue snapshot
+kbb --backend sci --classpath src scripts/emit_coverage_plan.cljs   # refresh the queue snapshot
 ```
 
 ```clojure
@@ -308,8 +308,8 @@ run-tests.cljs               nbb test entry point
 ```
 
 ```bash
-nbb --classpath src:test run-tests.cljs   # 8 tests, 132 assertions
-nbb --classpath src scripts/emit_tx.cljs  # regenerate data/datascript-tx.edn
+kbb --backend sci --classpath src:test run-tests.cljs   # 8 tests, 132 assertions
+kbb --backend sci --classpath src scripts/emit_tx.cljs  # regenerate data/datascript-tx.edn
 ```
 
 Script host is **nbb only** (ADR-2607173000) — no `bb.edn`, no shell scripts.

@@ -1,9 +1,9 @@
-#!/usr/bin/env nbb
+#!/usr/bin/env kbb
 ;; scripts/emit_tx.cljs — project `mortgage.facts/catalog` into DataScript
 ;; tx-data at data/datascript-tx.edn. GENERATED FILE: never hand-edit
 ;; data/datascript-tx.edn, edit src/mortgage/facts.cljc and re-run:
 ;;
-;;   nbb --classpath src scripts/emit_tx.cljs
+;;   kbb --backend sci --classpath src scripts/emit_tx.cljs
 ;;
 ;; nbb (not bb): script host policy is nbb-only, ADR-2607173000.
 
@@ -62,7 +62,7 @@
 (def header
   (str ";; data/datascript-tx.edn — GENERATED from src/mortgage/facts.cljc by\n"
        ";; scripts/emit_tx.cljs. Do not hand-edit: edit the catalog and re-run\n"
-       ";;   nbb --classpath src scripts/emit_tx.cljs\n"
+       ";;   kbb --backend sci --classpath src scripts/emit_tx.cljs\n"
        ";;\n"
        ";; " (count facts/catalog) " jurisdiction(s), "
        (count (mapcat support-datoms facts/catalog)) " support programme(s), "

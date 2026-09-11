@@ -1,8 +1,8 @@
-#!/usr/bin/env nbb
+#!/usr/bin/env kbb
 ;; scripts/emit_coverage_plan.cljs — derive the jurisdiction universe and
 ;; project the current coverage plan into data/.
 ;;
-;;   nbb --classpath src scripts/emit_coverage_plan.cljs [<cloud-itonami-dir>]
+;;   kbb --backend sci --classpath src scripts/emit_coverage_plan.cljs [<cloud-itonami-dir>]
 ;;
 ;; The universe is NOT hand-typed here. It is derived from the existing
 ;; `cloud-itonami-iso3166-*` family (225 repositories), which is this

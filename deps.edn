@@ -1,8 +1,8 @@
 ;; Portable `.cljc` catalog. The test suite and the tx-data generator run under
 ;; nbb (script-host policy: nbb only, ADR-2607173000):
 ;;
-;;   nbb --classpath src:test run-tests.cljs
-;;   nbb --classpath src scripts/emit_tx.cljs
+;;   kbb --backend sci --classpath src:test run-tests.cljs
+;;   kbb --backend sci --classpath src scripts/emit_tx.cljs
 ;;
 ;; This deps.edn exists so the same `.cljc` sources load on a JVM classpath for
 ;; linting and for consumers that embed the catalog in a Datomic/DataScript
