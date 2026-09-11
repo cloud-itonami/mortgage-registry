@@ -1,8 +1,8 @@
-#!/usr/bin/env nbb
+#!/usr/bin/env kbb
 ;; run-tests.cljs — nbb test entry point (script host policy: nbb only,
 ;; ADR-2607173000; no bb.edn, no shell script).
 ;;
-;;   nbb --classpath src:test run-tests.cljs
+;;   kbb --backend sci --classpath src:test run-tests.cljs
 
 (ns run-tests
   (:require [cljs.test :as t]

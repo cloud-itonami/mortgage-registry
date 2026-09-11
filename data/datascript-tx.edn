@@ -1,6 +1,6 @@
 ;; data/datascript-tx.edn — GENERATED from src/mortgage/facts.cljc by
 ;; scripts/emit_tx.cljs. Do not hand-edit: edit the catalog and re-run
-;;   nbb --classpath src scripts/emit_tx.cljs
+;;   kbb --backend sci --classpath src scripts/emit_tx.cljs
 ;;
 ;; 6 jurisdiction(s), 8 support programme(s), 16 organization(s).
 ;; Seeded coverage, NOT complete coverage — every jurisdiction entity
