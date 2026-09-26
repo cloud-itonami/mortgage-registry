@@ -81,15 +81,17 @@ assertions):
 `(facts/unverified-claims)` returns all of rule 2's gaps as data, so the
 to-do list is queryable rather than buried in prose.
 
-## The observation contract (`mortgage-observation/4`)
+## The observation contract (`mortgage-observation/5`)
 
 `src/mortgage/observation.cljc` is the contract that turns a reading of this
 catalog into a **provenance-preserving, re-observable claim** — and that makes
 it structurally hard for an observation run to look more certain than it is.
 v2 added the auditable-refresh machinery (item 10); v3 adds figure-level
-provenance attribution (item 11); v4 adds typed event inputs (item 12). A
-/1-, /2- or /3-stamped artifact and a /4-stamped artifact stay comparable on
-purpose:
+provenance attribution (item 11); v4 adds typed event inputs (item 12); v5
+adds the coverage refresh history (item 13 — donor fee-observation/3): a
+coverage row carries frozen identity and is recorded/refreshed/delta'd on a
+dedicated dedup'd lineage. A /1..-/4-stamped artifact and a /5-stamped
+artifact stay comparable on purpose:
 
 1. **Source receipt** (`receipt`) — one frozen record per source reading:
    https URL, closed-vocabulary source class, language, issuing entity,
@@ -109,7 +111,7 @@ purpose:
    measurement unit. Nothing is normalized into a comparable number anywhere:
    amounts at different dates and areas under different standards are not
    interchangeable (they ride as verbatim text plus basis).
-4. **Method / version** — every artifact carries `mortgage-observation/3`.
+4. **Method / version** — every artifact carries `mortgage-observation/5`.
    There is no model on this path anywhere.
 5. **Missingness** — flags come from a closed vocabulary, and an observation
    that declares NO gaps where the catalog's own `:verification

@@ -121,11 +121,15 @@
 (def contract-version
   "Every receipt, observation, coverage row, delta and claim carries this
   string. v3 adds figure-level provenance attribution (part 13); v4 adds
-  typed event inputs (part 14). Neither changes a shape the /1 and /2
-  contracts froze: a /1-, /2- or /3-stamped artifact and a /4-stamped
-  artifact are comparable by `refresh-delta` on purpose (mixed versions
-  across a chain are expected during the bump, never refused)."
-  "mortgage-observation/4")
+  typed event inputs (part 14); v5 adds the coverage refresh history plane
+  (part 15, donor fee-observation/3): a coverage row now carries frozen
+  identity and is recorded/refreshed/delta'd on a dedicated dedup'd lineage.
+  Neither change breaks a shape earlier generations froze: a /1..-/4-stamped
+  artifact and a /5-stamped artifact are comparable by `refresh-delta` on
+  purpose (mixed versions across a chain are expected during the bump, never
+  refused), and a pre-v5 coverage row stays readable through the plain
+  `refresh` history."
+  "mortgage-observation/5")
 
 ;; --- refusals (loud, never silent degradation) ------------------------------
 
@@ -174,6 +178,11 @@
     :history/duplicate-observation-id
     :history/not-an-observation
     :coverage/bad-universe
+    :coverage/not-a-coverage
+    :history/duplicate-coverage-id
+    :coverage/refresh-of-unknown
+    :coverage/refresh-of-self
+    :coverage/delta-cross-generation
     :readback/tampered-receipt
     :readback/refresh-of-unknown
     :readback/refresh-cycle
@@ -508,7 +517,14 @@
    :cov/published-gaps (count (facts/unverified-claims))
    :cov/non-goals ["coverage count — not a market metric, not a valuation, not a score"
                    "not a ranking of jurisdictions, programmes or organizations"
-                   "not a completeness claim: 'worldwide' is a coverage goal"]})
+                   "not a completeness claim: 'worldwide' is a coverage goal"]
+   ;; v5 (part 15): frozen identity so the row is recordable on the coverage
+   ;; history plane (record-coverage / refresh-coverage / coverage-delta).
+   :coverage/contract-version contract-version
+   :coverage/method contract-version
+   :coverage/id (str "cov-" (:to window))
+   :coverage/recorded-at (:to window)
+   :coverage/no-model true})
 
 (defn jurisdiction-observation
   "One derived observation per jurisdiction: the plan's per-plane status plus
@@ -638,6 +654,103 @@
     (or latest
         {:readback/miss true :readback/as-of as-of
          :readback/note "no coverage observation at or before this date"})))
+
+;; --- 8c. coverage refresh history + readback (v5, part 15) -------------------
+;;
+;; Donor: cloud-itonami/cloud-itonami-isic-6820 fee-observation/3 §8c.
+;; Before v5 a coverage row could be MINTED and pushed through the plain
+;; `refresh` history, but nothing validated it as a COVERAGE artifact: no
+;; frozen identity, no dedup on the coverage id, no lineage and no verbatim
+;; delta. Here coverage has its own append-only plane on the same history:
+;; `record-coverage` dedups on :coverage/id, `refresh-coverage` links the
+;; :coverage/refresh-of lineage (unknown / self refused), and
+;; `coverage-delta` compares two frozen rows of the same contract generation
+;; at the verbatim level — both sides carried in full, no numeric difference
+;; computed, no ranking derived. A pre-v5 coverage row (no :coverage/id, no
+;; :coverage/method, no :coverage/recorded-at, no :coverage/no-model) is
+;; refused at record time: it predates the coverage history plane. It stays
+;; READABLE through the plain `refresh` history and `readback-coverage`.
+
+(def ^:private coverage-frozen?
+  "The frozen-identity check for a coverage artifact this contract records."
+  (every-pred map?
+              #(= contract-version (:coverage/contract-version %))
+              #(contains? % :coverage/id)
+              #(contains? % :coverage/method)
+              #(contains? % :coverage/recorded-at)
+              #(contains? % :coverage/no-model)))
+
+(defn record-coverage
+  "Append a frozen coverage artifact to `history`, returning a NEW vector
+  (never mutate history in place). Refuses a non-coverage artifact or an id
+  already in the history — a re-count gets a new window and a new id."
+  [history cov]
+  (when-not (coverage-frozen? cov)
+    (refuse :coverage/not-a-coverage
+            "record-coverage takes a frozen coverage artifact from `coverage-observation` (v5+), not a raw map"))
+  (let [cid (str (:coverage/id cov))]
+    (when (some #(= (str (:coverage/id %)) cid) history)
+      (refuse :history/duplicate-coverage-id
+              (str "coverage " cid " is already recorded — a re-count gets a new window and id")))
+    (conj history cov)))
+
+(defn refresh-coverage
+  "Re-count linkage: append `cov` to `history` with :coverage/refresh-of set
+  to the :coverage/id of the coverage row it refreshes (the parent must be a
+  RECORDED row). Refuses an unknown parent and a self-refresh."
+  [history parent-id cov]
+  (when-not (coverage-frozen? cov)
+    (refuse :coverage/not-a-coverage
+            "refresh-coverage takes a frozen coverage artifact from `coverage-observation` (v5+), not a raw map"))
+  (let [pid (str parent-id)
+        cid (str (:coverage/id cov))]
+    (when (= pid cid)
+      (refuse :coverage/refresh-of-self "a coverage row cannot refresh itself"))
+    (when-not (some #(= (str (:coverage/id %)) pid) history)
+      (refuse :coverage/refresh-of-unknown (str ":coverage/refresh-of " pid " is not in the history")))
+    (when (some #(= (str (:coverage/id %)) cid) history)
+      (refuse :history/duplicate-coverage-id
+              (str "coverage " cid " is already recorded — a re-count gets a new window and id")))
+    (conj history (assoc cov :coverage/refresh-of pid))))
+
+(def ^:private coverage-fields
+  "The verbatim-level coverage fields a delta compares. Windows and ids are
+  NOT compared (a re-count legitimately moves the window); both sides of
+  every changed field are carried in full — no numeric difference is
+  computed, no amount normalized, no 'how much' answered."
+  [:cov/universe :cov/jurisdictions-seeded :cov/published-gaps :cov/planes
+   :cov/non-goals])
+
+(defn coverage-delta
+  "The auditable comparison of two frozen coverage artifacts of the SAME
+  contract generation: `prior` is what it refreshes, `next` is the re-count.
+  Pure and deterministic — equal inputs give an equal delta. Reports, at the
+  verbatim level with both bases carried:
+    :delta/changed-coverage-fields  fields whose count/status map moved,
+                                    each as {:delta/key :delta/prior :delta/next}
+    :delta/kind                     :unchanged or :changed
+    :delta/prior-id / :delta/next-id
+  The comparability note says what a count comparison never is."
+  [prior next]
+  (when-not (and (coverage-frozen? prior) (coverage-frozen? next))
+    (refuse :coverage/delta-cross-generation
+            "coverage-delta compares two frozen coverage artifacts; one side is not a frozen coverage row"))
+  (when-not (= (:coverage/contract-version prior) (:coverage/contract-version next))
+    (refuse :coverage/delta-cross-generation
+            (str "comparing coverage across contract generations ("
+                 (:coverage/contract-version prior) " vs "
+                 (:coverage/contract-version next) ") is refused")))
+  {:delta/kind (if (= (select-keys prior coverage-fields) (select-keys next coverage-fields))
+                 :unchanged :changed)
+   :delta/prior-id (str (:coverage/id prior))
+   :delta/next-id (str (:coverage/id next))
+   :delta/changed-coverage-fields
+   (vec (for [k coverage-fields
+              :let [a (get prior k) b (get next k)]
+              :when (not= a b)]
+          {:delta/key k :delta/prior a :delta/next b}))
+   :delta/comparability-note
+   "counts are coverage-limited observations of what the catalog shows — not a market metric, not a valuation, not a ranking; a changed count is reported, never scored"})
 
 ;; --- auditable refresh (v2, part 12): delta + lineage readback ---------------
 

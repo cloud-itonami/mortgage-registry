@@ -60,7 +60,7 @@
 ;; --- 0. contract identity ----------------------------------------------------
 
 (deftest contract-identity-is-named
-  (is (= "mortgage-observation/4" obs/contract-version))
+  (is (= "mortgage-observation/5" obs/contract-version))
   (is (seq obs/refusals) "the refusal codes are documented, not incidental")
   (is (contains? obs/receipt-classes (:source-class nhg-receipt)))
   (is (contains? obs/unmapped-in-scope (:source-class nhg-receipt))
@@ -311,7 +311,7 @@
         "every claim carries the not-verified gaps — none may drop them")
     (is (every? #(contains? (:claim/qualifiers %) :no-model) claims)
         "every claim carries :no-model — there is no model on this path")
-    (is (every? #(= "mortgage-observation/4" (:deterministic-extractor (:claim/qualifiers %))) claims)
+    (is (every? #(= "mortgage-observation/5" (:deterministic-extractor (:claim/qualifiers %))) claims)
         "method/version rides on every claim")))
 
 ;; --- 6. derived coverage observation ----------------------------------------------
@@ -401,6 +401,52 @@
     (is (:readback/miss (obs/readback-coverage h "2026-07-31"))
         "before the first coverage row there is only a miss")))
 
+;; --- 8c. coverage refresh history + readback (v5, part 15) --------------------
+
+(deftest coverage-history-records-refreshes-deltas-and-reads-back
+  (let [c1 (obs/coverage-observation small-universe {:from "2026-09-01" :to "2026-09-01"})
+        c2 (obs/coverage-observation small-universe {:from "2026-09-08" :to "2026-09-08"})
+        h (obs/record-coverage [] c1)
+        h2 (obs/refresh-coverage h "cov-2026-09-01" c2)]
+    (testing "coverage rows carry frozen identity; a coverage row is never a model"
+      (is (= "cov-2026-09-01" (:coverage/id c1)))
+      (is (= "2026-09-01" (:coverage/recorded-at c1)))
+      (is (true? (:coverage/no-model c1))))
+    (testing "record validates frozen identity and refuses duplicates"
+      (is (= 1 (count h)))
+      (is (= :coverage/not-a-coverage
+             (refusal-of #(obs/record-coverage h {:coverage/recorded-at "2026-09-01"}))))
+      (is (= :history/duplicate-coverage-id
+             (refusal-of #(obs/record-coverage h c1)))))
+    (testing "refresh links lineage, refuses unknown and self"
+      (is (= "cov-2026-09-01" (:coverage/refresh-of (peek (vec h2)))))
+      (is (= :coverage/refresh-of-unknown
+             (refusal-of #(obs/refresh-coverage h "cov-nope" c2))))
+      (is (= :coverage/refresh-of-self
+             (refusal-of #(obs/refresh-coverage h "cov-2026-09-01" c1)))))
+    (testing "delta is verbatim-level, both sides carried in full"
+      (let [d (obs/coverage-delta c1 c2)]
+        (is (= :unchanged (:delta/kind d)))
+        (is (= "cov-2026-09-01" (:delta/prior-id d)))
+        (is (= "cov-2026-09-08" (:delta/next-id d)))
+        (is (empty? (:delta/changed-coverage-fields d)))
+        (is (string? (:delta/comparability-note d))))
+      (let [altered (assoc c2 :cov/published-gaps (inc (:cov/published-gaps c2)))
+            d (obs/coverage-delta c1 altered)]
+        (is (= :changed (:delta/kind d)))
+        (is (= [{:delta/key :cov/published-gaps
+                 :delta/prior (:cov/published-gaps c1)
+                 :delta/next (:cov/published-gaps altered)}]
+               (:delta/changed-coverage-fields d)))))
+    (testing "delta refuses non-coverage and cross-generation artifacts"
+      (is (= :coverage/delta-cross-generation
+             (refusal-of #(obs/coverage-delta c1 {:coverage/recorded-at "2026-09-08"})))))
+    (testing "readback returns latest at-or-before from the recorded history, or a miss"
+      (is (= "cov-2026-09-08" (:coverage/id (obs/readback-coverage h2 "2026-09-12"))))
+      (is (= "cov-2026-09-01" (:coverage/id (obs/readback-coverage h2 "2026-09-01"))))
+      (is (true? (:readback/miss (obs/readback-coverage h "2026-08-31"))))
+      (is (string? (:readback/note (obs/readback-coverage h "2026-08-31")))))))
+
 ;; --- 9. auditable refresh (v2): refresh-delta + readback-chain ----------------
 
 (defn- nhg-observation-varied
@@ -436,7 +482,7 @@
         d (obs/refresh-delta g1 g2)]
     (is (= "delta-obs-NLD-support-nld.nhg-2026-09-01-to-obs-NLD-support-nld.nhg-2026-09-02"
            (:delta/id d)) "deterministic id from the two generation ids")
-    (is (= "mortgage-observation/4" (:obs/method d)) "the delta carries the contract version")
+    (is (= "mortgage-observation/5" (:obs/method d)) "the delta carries the contract version")
     (is (= 1 (count (:delta/figures-changed d))))
     (let [c (first (:delta/figures-changed d))]
       (is (= "guarantee-limit-2026" (:delta/field c)))
@@ -833,7 +879,7 @@
   (let [ev (nhg-event "2026-01-01")]
     (is (= "evt-NLD-support-nld.nhg-:parameter-change-announced-2026-01-01" (:event/id ev))
         "deterministic id: subject + kind + source-stated effective date")
-    (is (= "mortgage-observation/4" (:event/method ev)) "events carry the contract version")
+    (is (= "mortgage-observation/5" (:event/method ev)) "events carry the contract version")
     (is (= "2026-01-01" (:event/effective-at ev))
         "the effective date is the SOURCE's own stated date — carried, never computed")
     (is (contains? obs/event-kinds (:event/kind ev)) "the kind is from the closed vocabulary")))
@@ -971,7 +1017,7 @@
         "both announcement texts ride in full")
     (is (str/includes? (:event-delta/next-announcement d) "450.000"))
     (is (= [] (:event-delta/figures-added d)) "no figures were added")
-    (is (= "mortgage-observation/4" (:obs/method d)) "the delta carries the contract version")
+    (is (= "mortgage-observation/5" (:obs/method d)) "the delta carries the contract version")
     (is (nil? (:event-delta/kind d)) "something moved — not :unchanged")
     (is (= d (obs/event-delta g1 g2)) "equal inputs, equal delta — deterministic")
     ;; the same announcement re-observed (new receipt, same text): :unchanged
